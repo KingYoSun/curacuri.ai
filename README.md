@@ -6,15 +6,16 @@ Discord サーバー内の質問、要望、不満、バグ報告、盛り上が
 
 ## 現在の状態
 
-このリポジトリは、アプリケーション本体の実装前段階です。現在は Codex 中心の開発を始めるための最小実行可能ハーネスを整備しています。
+このリポジトリは、アプリケーション本体の実装前段階です。現在は Codex 中心の開発を始めるための最小実行可能ハーネスと、Phase
+1 Dogfood Alpha の実装仕様を整備しています。
 
 まだ以下は定義していません。
 
-- アプリケーション API
-- データベーススキーマ
-- Redis queue 名
-- Discord Bot の具体的な振る舞い
+- アプリケーション本体の実装コード
 - デプロイ構成
+
+Phase 1で導入する予定のアプリケーション API、データベーススキーマ、Redis queue 名、Discord
+Bot の振る舞い、自動返信境界は `docs/specs/phase-1-dogfood-alpha.md` に記載しています。
 
 ## 技術方針
 
@@ -53,9 +54,12 @@ pnpm test
 ## ドキュメント
 
 - プロダクト企画: `proposal.md`
+- Phase 1 仕様: `docs/specs/phase-1-dogfood-alpha.md`
 - エージェント向け入口: `AGENTS.md`
 - ハーネス運用: `docs/harness.md`
 - 技術判断: `docs/adr/`
+- 分類プロンプト: `docs/prompts/classification-v0.md`
+- 自動返信プロンプト: `docs/prompts/auto-reply-v0.md`
 
 ドキュメントは日本語で書きます。
 
