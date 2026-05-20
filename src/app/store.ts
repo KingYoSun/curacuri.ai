@@ -7,6 +7,7 @@ import {
   type Classification,
   type FaqCandidate,
   type GuildSettings,
+  type LlmGenerationRun,
   type Message,
   type WeeklyReport,
 } from "../shared/types.js";
@@ -20,6 +21,7 @@ export type Phase1State = {
   readonly autoReplies: Map<string, AutoReply>;
   readonly faqCandidates: Map<string, FaqCandidate>;
   readonly weeklyReports: Map<string, WeeklyReport>;
+  readonly llmGenerationRuns: Map<string, LlmGenerationRun>;
   readonly feedback: Map<string, AdminFeedback>;
   readonly queuedJobs: {
     readonly queueName: string;
@@ -38,6 +40,7 @@ export function createPhase1State(): Phase1State {
     autoReplies: new Map(),
     faqCandidates: new Map(),
     weeklyReports: new Map(),
+    llmGenerationRuns: new Map(),
     feedback: new Map(),
     queuedJobs: [],
   };

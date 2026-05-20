@@ -1,3 +1,5 @@
+import "../app/env.js";
+
 import { Worker } from "bullmq";
 import { Redis } from "ioredis";
 

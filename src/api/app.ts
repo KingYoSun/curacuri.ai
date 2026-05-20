@@ -8,19 +8,26 @@ import {
   importSampleLog,
   recordFeedback,
   refreshFaqCandidates,
+  reprocessLlmTask,
   rejectAutoReply,
+  retryLlmRun,
   updateFaqCandidateStatus,
 } from "../app/workflow.js";
+import { readLlmConfigFromEnv } from "../app/llm/client.js";
 import {
   autoReplyCategories,
   autoReplyModes,
   classificationLabels,
   feedbackKinds,
+  llmRunStatuses,
+  llmTaskTypes,
   type AutoReplyCategory,
   type AutoReplyMode,
   type ClassificationLabel,
   type FeedbackKind,
   type FaqCandidateStatus,
+  type LlmRunStatus,
+  type LlmTaskType,
 } from "../shared/types.js";
 
 export const phase1State = createPhase1State();
@@ -76,6 +83,23 @@ function modeValue(value: unknown, fallback: AutoReplyMode): AutoReplyMode {
   return fallback;
 }
 
+function llmRunStatusValue(value: unknown): LlmRunStatus | null {
+  if (typeof value === "string" && llmRunStatuses.includes(value as LlmRunStatus)) {
+    return value as LlmRunStatus;
+  }
+  return null;
+}
+
+function reprocessScopeValue(value: unknown): LlmTaskType | "all" {
+  if (value === "all") {
+    return "all";
+  }
+  if (typeof value === "string" && llmTaskTypes.includes(value as LlmTaskType)) {
+    return value as LlmTaskType;
+  }
+  return "all";
+}
+
 async function requestBody(request: Request): Promise<Record<string, unknown>> {
   const body: unknown = await request.json().catch(() => ({}));
   return isRecord(body) ? body : {};
@@ -92,6 +116,40 @@ export function createApiApp() {
       redis: "not_configured_in_memory",
     }),
   );
+
+  app.get("/api/llm/status", (context) => {
+    const config = readLlmConfigFromEnv();
+    const failedCount = [...phase1State.llmGenerationRuns.values()].filter(
+      (run) => run.status === "failed",
+    ).length;
+    return context.json({
+      configured: config.apiKey !== null && config.model !== null,
+      modelName: config.model ?? "unconfigured",
+      baseUrl: config.baseUrl,
+      concurrency: config.concurrency,
+      responseFormat: config.responseFormat,
+      failedCount,
+    });
+  });
+
+  app.get("/api/llm/runs", (context) => {
+    const status = llmRunStatusValue(context.req.query("status"));
+    const runs = listByCreatedAt(phase1State.llmGenerationRuns.values()).filter((run) =>
+      status === null ? true : run.status === status,
+    );
+    return context.json(runs);
+  });
+
+  app.post("/api/llm/runs/:id/retry", async (context) => {
+    await retryLlmRun(phase1State, context.req.param("id"));
+    return context.json({ ok: true });
+  });
+
+  app.post("/api/llm/reprocess", async (context) => {
+    const body = await requestBody(context.req.raw);
+    await reprocessLlmTask(phase1State, reprocessScopeValue(body.scope));
+    return context.json({ ok: true });
+  });
 
   app.get("/api/settings", (context) => context.json(phase1State.settings));
 
@@ -175,7 +233,7 @@ export function createApiApp() {
 
   app.post("/api/import/sample-log", async (context) => {
     const result = await importSampleLog(phase1State);
-    refreshFaqCandidates(phase1State);
+    await refreshFaqCandidates(phase1State);
     return context.json(result);
   });
 
@@ -205,7 +263,6 @@ export function createApiApp() {
   });
 
   app.get("/api/faq-candidates", (context) => {
-    refreshFaqCandidates(phase1State);
     return context.json(listByCreatedAt(phase1State.faqCandidates.values()));
   });
 
@@ -228,11 +285,14 @@ export function createApiApp() {
 
   app.post("/api/reports/weekly", async (context) => {
     const body = await requestBody(context.req.raw);
-    const report = generateWeeklyReport(
+    const report = await generateWeeklyReport(
       phase1State,
       stringValue(body.periodStart, "2026-01-01"),
       stringValue(body.periodEnd, "2026-01-07"),
     );
+    if (report === null) {
+      return context.json({ error: "weekly report generation failed" }, 500);
+    }
     return context.json(report);
   });
 

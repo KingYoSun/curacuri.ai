@@ -23,6 +23,12 @@ services:
       PORT: "8787"
       DATABASE_URL: postgres://curacuri:curacuri@postgres:5432/curacuri
       REDIS_URL: redis://redis:6379
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-30000}
+      LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
+      LLM_RESPONSE_FORMAT: ${LLM_RESPONSE_FORMAT:-json_object}
     ports:
       - "8787:8787"
     depends_on:
@@ -35,6 +41,12 @@ services:
     environment:
       DATABASE_URL: postgres://curacuri:curacuri@postgres:5432/curacuri
       REDIS_URL: redis://redis:6379
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-30000}
+      LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
+      LLM_RESPONSE_FORMAT: ${LLM_RESPONSE_FORMAT:-json_object}
     depends_on:
       - postgres
       - redis

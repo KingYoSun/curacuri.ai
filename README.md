@@ -30,6 +30,7 @@ Phase
 
 ```sh
 pnpm install
+cp .env.example .env
 ```
 
 ## 開発コマンド
@@ -52,11 +53,28 @@ pnpm dev:bot
 API は `http://localhost:8787`、Dashboard は `http://localhost:5173`
 で起動します。Dashboard からサンプルログ投入と週次レポート生成を実行できます。
 
+LLM実接続はOpenAI CompatibleなChat Completions APIを使います。実行には `.env`
+を編集して次の環境変数を設定します。
+
+```sh
+LLM_API_KEY=...
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-5.5
+LLM_TIMEOUT_MS=30000
+LLM_CONCURRENCY=2
+LLM_RESPONSE_FORMAT=json_object
+```
+
+`LLM_API_KEY` または `LLM_MODEL`
+が未設定の場合、分類、返信案、FAQ候補、週次レポート生成は失敗runとして記録されます。Dashboard のLLM失敗一覧から個別再実行または一括再実行できます。
+
 Docker Compose で確認する場合は次を使います。
 
 ```sh
 docker compose up --build
 ```
+
+Docker Compose もリポジトリルートの `.env` を参照します。秘密値を含む `.env` はgit管理しません。
 
 Discord 実接続には `DISCORD_TOKEN` と Message Content
 Intent が必要です。DMは取り込まず、`guild_settings.target_channel_ids`

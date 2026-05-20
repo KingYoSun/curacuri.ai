@@ -17,12 +17,18 @@ importers:
       discord.js:
         specifier: ^14.26.4
         version: 14.26.4
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
       hono:
         specifier: ^4.12.21
         version: 4.12.21
       ioredis:
         specifier: ^5.10.1
         version: 5.10.1
+      openai:
+        specifier: ^6.38.0
+        version: 6.38.0(ws@8.20.1)
       pg:
         specifier: ^8.21.0
         version: 8.21.0
@@ -737,6 +743,10 @@ packages:
     resolution: {integrity: sha512-4oBp8tc6Kf8IDBwAHhbsMaAqx1b5fob9SNasZT7V6yyyUydoO5i5fGuX7TmvRtR+q/WgKRnRViRoAWnG7fNyvA==}
     engines: {node: '>=18'}
 
+  dotenv@17.4.2:
+    resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
+    engines: {node: '>=12'}
+
   es-module-lexer@2.1.0:
     resolution: {integrity: sha512-n27zTYMjYu1aj4MjCWzSP7G9r75utsaoc8m61weK+W8JMBGGQybd43GstCXZ3WNmSFtGT9wi59qQTW6mhTR5LQ==}
 
@@ -1094,6 +1104,18 @@ packages:
 
   obug@2.1.1:
     resolution: {integrity: sha512-uTqF9MuPraAQ+IsnPf366RG4cP9RtUi7MLO1N3KEc+wb0a6yKpeL0lmk2IB1jY5KHPAlTc6T/JRdC/YqxHNwkQ==}
+
+  openai@6.38.0:
+    resolution: {integrity: sha512-AoMplt2UalrpgUDMh3L09QWjNRlgJPipclQvA6sYAaeF6nHNBMgmikAZGmcYLn8on4d9sQY9Q8bOLfrBS7Lc8g==}
+    hasBin: true
+    peerDependencies:
+      ws: ^8.18.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      ws:
+        optional: true
+      zod:
+        optional: true
 
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
@@ -2034,6 +2056,8 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  dotenv@17.4.2: {}
+
   es-module-lexer@2.1.0: {}
 
   esbuild@0.28.0:
@@ -2384,6 +2408,10 @@ snapshots:
     optional: true
 
   obug@2.1.1: {}
+
+  openai@6.38.0(ws@8.20.1):
+    optionalDependencies:
+      ws: 8.20.1
 
   optionator@0.9.4:
     dependencies:

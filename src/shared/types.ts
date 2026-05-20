@@ -102,6 +102,32 @@ export type CurrentAnswerStatus =
 
 export type WeeklyReportStatus = "generating" | "ready" | "failed";
 
+export const llmTaskTypes = [
+  "classification",
+  "auto_reply",
+  "faq_candidates",
+  "weekly_report",
+] as const;
+
+export type LlmTaskType = (typeof llmTaskTypes)[number];
+
+export const llmRunStatuses = ["pending", "running", "succeeded", "failed"] as const;
+
+export type LlmRunStatus = (typeof llmRunStatuses)[number];
+
+export type LlmGenerationRun = {
+  readonly id: string;
+  readonly taskType: LlmTaskType;
+  readonly targetId: string;
+  readonly status: LlmRunStatus;
+  readonly modelName: string;
+  readonly errorCode: string | null;
+  readonly errorMessage: string | null;
+  readonly rawOutput: Record<string, unknown> | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+
 export type MessageSource = "discord" | "sample_log";
 
 export type GuildSettings = {

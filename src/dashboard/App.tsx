@@ -27,6 +27,26 @@ type AutoReplyPolicy = {
   readonly minConfidence: number;
 };
 
+type LlmStatus = {
+  readonly configured: boolean;
+  readonly modelName: string;
+  readonly baseUrl: string;
+  readonly concurrency: number;
+  readonly responseFormat: string;
+  readonly failedCount: number;
+};
+
+type LlmRun = {
+  readonly id: string;
+  readonly taskType: string;
+  readonly targetId: string;
+  readonly status: string;
+  readonly modelName: string;
+  readonly errorCode: string | null;
+  readonly errorMessage: string | null;
+  readonly createdAt: string;
+};
+
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(path);
   if (!response.ok) {
@@ -50,6 +70,9 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 export function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [policy, setPolicy] = useState<AutoReplyPolicy | null>(null);
+  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
+  const [failedRuns, setFailedRuns] = useState<readonly LlmRun[]>([]);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [counts, setCounts] = useState<Counts>({
     messages: 0,
     classifications: 0,
@@ -70,6 +93,8 @@ export function App() {
       faqCandidates,
       autoReplies,
       weeklyReports,
+      nextLlmStatus,
+      nextFailedRuns,
     ] = await Promise.all([
       getJson<Settings>("/api/settings"),
       getJson<AutoReplyPolicy>("/api/auto-reply/policy"),
@@ -79,9 +104,13 @@ export function App() {
       getJson<readonly unknown[]>("/api/faq-candidates"),
       getJson<readonly unknown[]>("/api/auto-replies"),
       getJson<readonly { readonly shortBody: string }[]>("/api/reports/weekly"),
+      getJson<LlmStatus>("/api/llm/status"),
+      getJson<readonly LlmRun[]>("/api/llm/runs?status=failed"),
     ]);
     setSettings(nextSettings);
     setPolicy(nextPolicy);
+    setLlmStatus(nextLlmStatus);
+    setFailedRuns(nextFailedRuns);
     setCounts({
       messages: messages.length,
       classifications: classifications.length,
@@ -98,17 +127,50 @@ export function App() {
   }, []);
 
   async function importSample() {
-    await postJson("/api/import/sample-log", {});
-    await refresh();
+    try {
+      setActionError(null);
+      await postJson("/api/import/sample-log", {});
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function generateReport() {
-    const report = await postJson<{ readonly shortBody: string }>("/api/reports/weekly", {
-      periodStart: "2026-01-01",
-      periodEnd: "2026-01-07",
-    });
-    setLatestReport(report.shortBody);
-    await refresh();
+    try {
+      setActionError(null);
+      const report = await postJson<{ readonly shortBody: string }>("/api/reports/weekly", {
+        periodStart: "2026-01-01",
+        periodEnd: "2026-01-07",
+      });
+      setLatestReport(report.shortBody);
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      await refresh();
+    }
+  }
+
+  async function retryRun(runId: string) {
+    try {
+      setActionError(null);
+      await postJson(`/api/llm/runs/${runId}/retry`, {});
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      await refresh();
+    }
+  }
+
+  async function reprocessAll() {
+    try {
+      setActionError(null);
+      await postJson("/api/llm/reprocess", { scope: "all" });
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      await refresh();
+    }
   }
 
   return (
@@ -125,8 +187,13 @@ export function App() {
           <button type="button" onClick={() => void generateReport()}>
             週次レポート生成
           </button>
+          <button type="button" onClick={() => void reprocessAll()}>
+            LLM一括再実行
+          </button>
         </div>
       </header>
+
+      {actionError === null ? null : <p className="error-line">{actionError}</p>}
 
       <section className="metrics" aria-label="運営メトリクス">
         <Metric label="投稿" value={counts.messages} />
@@ -175,6 +242,46 @@ export function App() {
             <dd>{policy?.minConfidence ?? "-"}</dd>
           </dl>
         </article>
+
+        <article>
+          <h2>LLM接続</h2>
+          <dl>
+            <dt>状態</dt>
+            <dd>{llmStatus?.configured === true ? "設定済み" : "未設定"}</dd>
+            <dt>モデル</dt>
+            <dd>{llmStatus?.modelName ?? "-"}</dd>
+            <dt>Base URL</dt>
+            <dd>{llmStatus?.baseUrl ?? "-"}</dd>
+            <dt>JSON方式</dt>
+            <dd>{llmStatus?.responseFormat ?? "-"}</dd>
+            <dt>同時実行</dt>
+            <dd>{llmStatus?.concurrency ?? "-"}</dd>
+            <dt>失敗run</dt>
+            <dd>{llmStatus?.failedCount ?? 0}件</dd>
+          </dl>
+        </article>
+      </section>
+
+      <section className="report">
+        <h2>LLM失敗一覧</h2>
+        {failedRuns.length === 0 ? (
+          <p>失敗中のLLM生成はありません。</p>
+        ) : (
+          <div className="run-list">
+            {failedRuns.slice(0, 12).map((run) => (
+              <div className="run-row" key={run.id}>
+                <div>
+                  <strong>{run.taskType}</strong>
+                  <span>{run.errorCode ?? "error"}</span>
+                  <p>{run.errorMessage ?? "詳細なし"}</p>
+                </div>
+                <button type="button" onClick={() => void retryRun(run.id)}>
+                  再実行
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="report">

@@ -16,3 +16,25 @@
 - Hosted公開、OAuth導入ウィザード、マルチテナント、複数guild管理は追加していない。
 - 公式回答の完全自動投稿、自動モデレーション、自動BAN、自動ロール操作は追加していない。
 - ユーザーごとの評価、採点、危険度、信頼度は保存していない。
+
+## 2026-05-20 OpenAI Compatible LLM実接続
+
+### 仕様外の追加判断
+
+- OpenAI Compatibleプロバイダの互換性を優先し、Responses APIではなく `/v1/chat/completions`
+  互換のChat Completionsを使う。
+- 環境変数は `OPENAI_*` ではなく `LLM_*` に統一した。
+- JSON出力は `json_schema` ではなく `json_object` を既定にした。schema validationはアプリ側で行う。
+- LLM未設定、通信失敗、JSON不正、schema validation失敗ではrule-based
+  fallbackを使わず、`llm_generation_runs`
+  に失敗として保存し、Dashboard/APIから再実行できるようにした。
+- 実APIを叩くテストは `pnpm check` に含めず、fake LLM clientで決定的に検証する。
+- LLM、Discord、ローカルサービスの環境変数は `.env` で管理し、git管理するのは `.env.example`
+  のみにした。
+- Google Gemini のOpenAI互換endpointではChat Completionsの `metadata`
+  が400になるため、互換性優先でLLMリクエストに `metadata` を付けない。
+
+### 範囲を広げなかったもの
+
+- Responses API対応、provider別adapter、LLMコスト集計、永続DB repository実装は追加していない。
+- APIキー、Authorization header、provider secretをDB、run raw output、ログへ保存しない。

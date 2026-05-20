@@ -1,11 +1,15 @@
 import { readFile } from "node:fs/promises";
 
-import { classifyMessage } from "./classifier.js";
-import { decideAutoReply } from "./auto-reply.js";
-import { generateFaqCandidates } from "./faq.js";
 import { normalizeSampleRecord, parseSampleJsonl } from "./intake.js";
+import { createDefaultLlmClient, readLlmConfigFromEnv, type LlmClient } from "./llm/client.js";
+import {
+  generateAutoReplyWithLlm,
+  generateClassificationWithLlm,
+  generateFaqCandidatesWithLlm,
+  generateWeeklyReportWithLlm,
+} from "./llm/generation.js";
 import { createAdminNotification } from "./notifications.js";
-import { buildWeeklyReport } from "./report.js";
+import { buildWeeklyReportMetrics } from "./report.js";
 import { listByCreatedAt, listByIngestedAt, type Phase1State } from "./store.js";
 import { newId, nowIso } from "./ids.js";
 import {
@@ -14,10 +18,27 @@ import {
   type FeedbackKind,
   type FaqCandidateStatus,
   type Message,
+  type LlmTaskType,
   type WeeklyReport,
 } from "../shared/types.js";
 
 export const sampleLogPath = "datasets/samples/discord-jp-v0.jsonl";
+
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  const workers = Array.from({ length: Math.max(1, concurrency) }, async (_, workerIndex) => {
+    for (let index = workerIndex; index < items.length; index += Math.max(1, concurrency)) {
+      const item = items[index];
+      if (item !== undefined) {
+        await fn(item);
+      }
+    }
+  });
+  await Promise.all(workers);
+}
 
 function hasMessage(state: Phase1State, message: Message): boolean {
   return [...state.messages.values()].some(
@@ -49,24 +70,29 @@ export function ingestMessage(state: Phase1State, message: Message): Message {
   return message;
 }
 
-export function processMessage(state: Phase1State, message: Message): void {
-  const classification = classifyMessage(message);
-  state.classifications.set(classification.id, classification);
+export async function processMessage(
+  state: Phase1State,
+  message: Message,
+  client: LlmClient = createDefaultLlmClient(),
+): Promise<void> {
+  const classification = await generateClassificationWithLlm(state, message, client);
+  if (classification === null) {
+    return;
+  }
 
   const notification = createAdminNotification(message, classification, state.settings);
   if (notification !== null) {
     state.notifications.set(notification.id, notification);
   }
 
-  const autoReply = decideAutoReply(message, classification, state.autoReplyPolicy, [
-    ...state.faqCandidates.values(),
-  ]);
+  const autoReply = await generateAutoReplyWithLlm(state, message, classification, client);
   state.autoReplies.set(autoReply.id, autoReply);
 }
 
 export async function importSampleLog(
   state: Phase1State,
   path = sampleLogPath,
+  client: LlmClient = createDefaultLlmClient(),
 ): Promise<{
   readonly imported: number;
   readonly skipped: number;
@@ -75,49 +101,51 @@ export async function importSampleLog(
   const records = parseSampleJsonl(jsonl);
   let imported = 0;
   let skipped = 0;
+  const ingestedMessages: Message[] = [];
 
-  records.forEach((record, index) => {
+  for (const [index, record] of records.entries()) {
     const message = normalizeSampleRecord(record, index);
     const before = state.messages.size;
     const ingested = ingestMessage(state, message);
     if (state.messages.size === before && ingested.id !== message.id) {
       skipped += 1;
-      return;
+      continue;
     }
     imported += 1;
-    processMessage(state, ingested);
-  });
+    ingestedMessages.push(ingested);
+  }
+
+  await runWithConcurrency(ingestedMessages, readLlmConfigFromEnv().concurrency, async (message) =>
+    processMessage(state, message, client),
+  );
 
   return { imported, skipped };
 }
 
-export function refreshFaqCandidates(state: Phase1State): void {
-  const candidates = generateFaqCandidates(
-    [...state.messages.values()],
-    [...state.classifications.values()],
-  );
-  state.faqCandidates.clear();
-  for (const candidate of candidates) {
-    state.faqCandidates.set(candidate.id, candidate);
-  }
+export async function refreshFaqCandidates(
+  state: Phase1State,
+  client: LlmClient = createDefaultLlmClient(),
+): Promise<void> {
+  await generateFaqCandidatesWithLlm(state, client);
 }
 
-export function generateWeeklyReport(
+export async function generateWeeklyReport(
   state: Phase1State,
   periodStart: string,
   periodEnd: string,
-): WeeklyReport {
-  refreshFaqCandidates(state);
-  const report = buildWeeklyReport(
-    periodStart,
-    periodEnd,
-    state.settings,
-    [...state.messages.values()],
+  client: LlmClient = createDefaultLlmClient(),
+): Promise<WeeklyReport | null> {
+  await refreshFaqCandidates(state, client);
+  const metrics = buildWeeklyReportMetrics(
     [...state.classifications.values()],
     [...state.faqCandidates.values()],
     [...state.autoReplies.values()],
   );
-  state.weeklyReports.set(report.id, report);
+  const report = await generateWeeklyReportWithLlm(state, client, {
+    periodStart,
+    periodEnd,
+    metrics,
+  });
   state.queuedJobs.push({
     queueName: "report.weekly",
     payload: {
@@ -127,6 +155,72 @@ export function generateWeeklyReport(
     },
   });
   return report;
+}
+
+export async function retryLlmRun(
+  state: Phase1State,
+  runId: string,
+  client: LlmClient = createDefaultLlmClient(),
+): Promise<void> {
+  const run = state.llmGenerationRuns.get(runId);
+  if (run === undefined) {
+    throw new Error(`LLM run not found: ${runId}`);
+  }
+  await reprocessLlmTask(state, run.taskType, client, run.targetId);
+}
+
+export async function reprocessLlmTask(
+  state: Phase1State,
+  scope: LlmTaskType | "all",
+  client: LlmClient = createDefaultLlmClient(),
+  targetId?: string,
+): Promise<void> {
+  if (scope === "all" || scope === "classification") {
+    const messages =
+      targetId === undefined
+        ? [...state.messages.values()]
+        : [...state.messages.values()].filter((message) => message.id === targetId);
+    if (targetId === undefined) {
+      state.classifications.clear();
+      state.notifications.clear();
+      state.autoReplies.clear();
+    }
+    for (const message of messages) {
+      await processMessage(state, message, client);
+    }
+  }
+
+  if (scope === "auto_reply") {
+    const classificationsByMessage = new Map(
+      [...state.classifications.values()].map((classification) => [
+        classification.messageId,
+        classification,
+      ]),
+    );
+    const messages =
+      targetId === undefined
+        ? [...state.messages.values()]
+        : [...state.messages.values()].filter((message) => message.id === targetId);
+    if (targetId === undefined) {
+      state.autoReplies.clear();
+    }
+    for (const message of messages) {
+      const classification = classificationsByMessage.get(message.id);
+      if (classification !== undefined) {
+        const autoReply = await generateAutoReplyWithLlm(state, message, classification, client);
+        state.autoReplies.set(autoReply.id, autoReply);
+      }
+    }
+  }
+
+  if (scope === "all" || scope === "faq_candidates") {
+    await refreshFaqCandidates(state, client);
+  }
+
+  if (scope === "all" || scope === "weekly_report") {
+    const [periodStart = "2026-01-01", periodEnd = "2026-01-07"] = (targetId ?? "").split(":");
+    await generateWeeklyReport(state, periodStart, periodEnd, client);
+  }
 }
 
 export function recordFeedback(
@@ -212,6 +306,7 @@ export function snapshot(state: Phase1State): Record<string, unknown> {
     autoReplies: listByCreatedAt(state.autoReplies.values()),
     faqCandidates: listByCreatedAt(state.faqCandidates.values()),
     weeklyReports: listByCreatedAt(state.weeklyReports.values()),
+    llmGenerationRuns: listByCreatedAt(state.llmGenerationRuns.values()),
     feedback: listByCreatedAt(state.feedback.values()),
     queuedJobs: state.queuedJobs,
   };

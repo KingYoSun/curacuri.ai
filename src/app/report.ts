@@ -28,6 +28,22 @@ function padList(items: readonly string[], fallback: string): readonly string[] 
   return items.length === 0 ? [fallback] : items;
 }
 
+export function buildWeeklyReportMetrics(
+  classifications: readonly Classification[],
+  faqCandidates: readonly FaqCandidate[],
+  autoReplies: readonly AutoReply[],
+): WeeklyReportMetrics {
+  return {
+    unansweredQuestionCount: countByLabel(classifications, "未回答質問"),
+    bugReportCount: countByLabel(classifications, "バグ報告"),
+    featureRequestCount: countByLabel(classifications, "要望"),
+    complaintCount: countByLabel(classifications, "不満"),
+    faqCandidateCount: faqCandidates.length,
+    autoReplySentCount: autoReplies.filter((reply) => reply.status === "sent").length,
+    autoReplyEscalatedCount: autoReplies.filter((reply) => reply.status === "escalated").length,
+  };
+}
+
 export function buildWeeklyReport(
   periodStart: string,
   periodEnd: string,
@@ -37,15 +53,7 @@ export function buildWeeklyReport(
   faqCandidates: readonly FaqCandidate[],
   autoReplies: readonly AutoReply[],
 ): WeeklyReport {
-  const metrics: WeeklyReportMetrics = {
-    unansweredQuestionCount: countByLabel(classifications, "未回答質問"),
-    bugReportCount: countByLabel(classifications, "バグ報告"),
-    featureRequestCount: countByLabel(classifications, "要望"),
-    complaintCount: countByLabel(classifications, "不満"),
-    faqCandidateCount: faqCandidates.length,
-    autoReplySentCount: autoReplies.filter((reply) => reply.status === "sent").length,
-    autoReplyEscalatedCount: autoReplies.filter((reply) => reply.status === "escalated").length,
-  };
+  const metrics = buildWeeklyReportMetrics(classifications, faqCandidates, autoReplies);
   const summaries = padList(
     topSummaries(classifications, 3),
     "要追加確認: 高重要度の投稿はありません。",
