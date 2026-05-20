@@ -38,3 +38,25 @@
 
 - Responses API対応、provider別adapter、LLMコスト集計、永続DB repository実装は追加していない。
 - APIキー、Authorization header、provider secretをDB、run raw output、ログへ保存しない。
+
+## 2026-05-20 Phase 1 P0 永続化・queue・dry-run送信
+
+### 仕様外の追加判断
+
+- 既存のLLM生成関数が `Phase1State` に結合しているため、P0ではPostgreSQL
+  repositoryから状態を読み出し、処理後にDBへ同期する薄い永続化workflowを追加した。LLM生成関数の全面分解は後続の内部改善とする。
+- 自動返信LLMが即時送信可能と判断した場合でも、DB保存時には `drafted`
+  として保存し、`auto_reply.send` queueでdry-runまたは実送信した時点で `sent`
+  に更新する。送信事故を避けるため、送信状態の確定はsender adapterに集約した。
+- `ops.notify`
+  は個別通知IDではなくpending通知をまとめて処理する。分類jobが通知候補を保存した後にqueueへ投入するため、P0の運用では重複実行されてもDB状態で判定できる。
+- Discord実送信はWebhookではなくBot tokenでDiscord REST
+  APIへ投稿するadapterにした。`DISCORD_DRY_RUN=true` ではDiscord APIを呼ばず、`dry-run:<id>`
+  を送信message idとして保存する。
+
+### 範囲を広げなかったもの
+
+- 既存DBの移行互換、複数guild分離、API認証、Hosted運用、OAuth導入は追加していない。
+- BullMQ
+  job履歴を独自DBテーブルへ複製していない。job受付状態はBullMQ、業務状態は各ドメインテーブルに保存する。
+- Discord実送信の本番疎通確認はdry-run既定のため行わない。

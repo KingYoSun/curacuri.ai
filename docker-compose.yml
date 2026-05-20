@@ -10,11 +10,21 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U curacuri -d curacuri"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   api:
     build: .
@@ -29,11 +39,14 @@ services:
       LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-30000}
       LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
       LLM_RESPONSE_FORMAT: ${LLM_RESPONSE_FORMAT:-json_object}
+      DISCORD_DRY_RUN: ${DISCORD_DRY_RUN:-true}
     ports:
       - "8787:8787"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   worker:
     build: .
@@ -47,17 +60,24 @@ services:
       LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-30000}
       LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
       LLM_RESPONSE_FORMAT: ${LLM_RESPONSE_FORMAT:-json_object}
+      DISCORD_TOKEN: ${DISCORD_TOKEN:-}
+      DISCORD_DRY_RUN: ${DISCORD_DRY_RUN:-true}
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   dashboard:
     build: .
     command: pnpm dev:dashboard --host 0.0.0.0
+    environment:
+      VITE_API_PROXY_TARGET: http://api:8787
     ports:
       - "5173:5173"
     depends_on:
-      - api
+      api:
+        condition: service_started
 
 volumes:
   postgres-data:

@@ -188,7 +188,9 @@ export type AdminNotification = {
   readonly importance: "high" | "critical";
   readonly status: NotificationStatus;
   readonly sentToChannelId: string;
+  readonly sentMessageId: string | null;
   readonly sentAt: string | null;
+  readonly failureReason: string | null;
   readonly createdAt: string;
 };
 

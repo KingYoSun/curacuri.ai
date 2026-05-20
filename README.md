@@ -8,8 +8,8 @@ Discord サーバー内の質問、要望、不満、バグ報告、盛り上が
 
 このリポジトリは、Codex 中心の開発ハーネスと Phase 1 Dogfood Alpha の縦断実装を含みます。
 
-Phase
-1 では、サンプルログ取り込み、投稿分類、重要通知候補、FAQ候補、限定自動返信判定、週次レポート、管理者フィードバック、Alpha管理画面の最初の動線を実装しています。
+Phase 1 では、PostgreSQL永続化、BullMQ
+queue、サンプルログ取り込み、投稿分類、重要通知候補、FAQ候補、限定自動返信判定、dry-run既定のDiscord送信、週次レポート、管理者フィードバック、Alpha管理画面の運用動線を実装しています。
 
 ## 技術方針
 
@@ -53,6 +53,9 @@ pnpm dev:bot
 API は `http://localhost:8787`、Dashboard は `http://localhost:5173`
 で起動します。Dashboard からサンプルログ投入と週次レポート生成を実行できます。
 
+API、worker、bot の実運用経路では `DATABASE_URL` と `REDIS_URL`
+が必須です。未設定の場合は起動に失敗します。
+
 LLM実接続はOpenAI CompatibleなChat Completions APIを使います。実行には `.env`
 を編集して次の環境変数を設定します。
 
@@ -67,6 +70,10 @@ LLM_RESPONSE_FORMAT=json_object
 
 `LLM_API_KEY` または `LLM_MODEL`
 が未設定の場合、分類、返信案、FAQ候補、週次レポート生成は失敗runとして記録されます。Dashboard のLLM失敗一覧から個別再実行または一括再実行できます。
+
+Discord 送信は `DISCORD_DRY_RUN=true` が既定です。この状態ではDiscord
+APIを呼ばず、DB上だけで送信済みとして記録します。実送信する場合だけ `DISCORD_TOKEN` と
+`DISCORD_DRY_RUN=false` を設定します。
 
 Docker Compose で確認する場合は次を使います。
 

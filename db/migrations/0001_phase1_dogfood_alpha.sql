@@ -59,7 +59,9 @@ CREATE TABLE admin_notifications (
   importance text NOT NULL CHECK (importance IN ('high', 'critical')),
   status text NOT NULL CHECK (status IN ('pending', 'sent', 'dismissed', 'failed')),
   sent_to_channel_id text NOT NULL,
+  sent_message_id text,
   sent_at timestamptz,
+  failure_reason text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

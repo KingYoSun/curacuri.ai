@@ -68,7 +68,9 @@ export function createAdminNotification(
     importance,
     status: "pending",
     sentToChannelId: settings.adminNotificationChannelId,
+    sentMessageId: null,
     sentAt: null,
+    failureReason: null,
     createdAt: nowIso(),
   };
 }

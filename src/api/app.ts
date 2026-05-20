@@ -1,19 +1,17 @@
 import { Hono } from "hono";
 
 import { nowIso } from "../app/ids.js";
-import { createPhase1State, listByCreatedAt, listByIngestedAt } from "../app/store.js";
-import {
-  approveAutoReply,
-  generateWeeklyReport,
-  importSampleLog,
-  recordFeedback,
-  refreshFaqCandidates,
-  reprocessLlmTask,
-  rejectAutoReply,
-  retryLlmRun,
-  updateFaqCandidateStatus,
-} from "../app/workflow.js";
 import { readLlmConfigFromEnv } from "../app/llm/client.js";
+import {
+  approveAutoReplyInRepository,
+  enqueueReprocess,
+  enqueueRetryRun,
+  enqueueSampleLog,
+  recordFeedbackInRepository,
+  rejectAutoReplyInRepository,
+  updateFaqCandidateStatusInRepository,
+} from "../app/persistent-workflow.js";
+import type { AppRuntime } from "../app/runtime.js";
 import {
   autoReplyCategories,
   autoReplyModes,
@@ -29,8 +27,8 @@ import {
   type LlmRunStatus,
   type LlmTaskType,
 } from "../shared/types.js";
-
-export const phase1State = createPhase1State();
+import type { FaqGeneratePayload, ReportWeeklyPayload } from "../shared/queue.js";
+import type { MessageFilters } from "../app/repositories/types.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -83,11 +81,11 @@ function modeValue(value: unknown, fallback: AutoReplyMode): AutoReplyMode {
   return fallback;
 }
 
-function llmRunStatusValue(value: unknown): LlmRunStatus | null {
+function llmRunStatusValue(value: unknown): LlmRunStatus | undefined {
   if (typeof value === "string" && llmRunStatuses.includes(value as LlmRunStatus)) {
     return value as LlmRunStatus;
   }
-  return null;
+  return undefined;
 }
 
 function reprocessScopeValue(value: unknown): LlmTaskType | "all" {
@@ -105,23 +103,22 @@ async function requestBody(request: Request): Promise<Record<string, unknown>> {
   return isRecord(body) ? body : {};
 }
 
-export function createApiApp() {
+export function createApiApp(runtime: AppRuntime) {
   const app = new Hono();
 
   app.get("/api/health", (context) =>
     context.json({
       ok: true,
       api: "ok",
-      db: "not_configured_in_memory",
-      redis: "not_configured_in_memory",
+      db: "ok",
+      redis: "ok",
+      dryRun: process.env.DISCORD_DRY_RUN !== "false",
     }),
   );
 
-  app.get("/api/llm/status", (context) => {
+  app.get("/api/llm/status", async (context) => {
     const config = readLlmConfigFromEnv();
-    const failedCount = [...phase1State.llmGenerationRuns.values()].filter(
-      (run) => run.status === "failed",
-    ).length;
+    const failedCount = (await runtime.repository.listLlmRuns("failed")).length;
     return context.json({
       configured: config.apiKey !== null && config.model !== null,
       modelName: config.model ?? "unconfigured",
@@ -132,128 +129,132 @@ export function createApiApp() {
     });
   });
 
-  app.get("/api/llm/runs", (context) => {
+  app.get("/api/llm/runs", async (context) => {
     const status = llmRunStatusValue(context.req.query("status"));
-    const runs = listByCreatedAt(phase1State.llmGenerationRuns.values()).filter((run) =>
-      status === null ? true : run.status === status,
-    );
-    return context.json(runs);
+    return context.json(await runtime.repository.listLlmRuns(status));
   });
 
   app.post("/api/llm/runs/:id/retry", async (context) => {
-    await retryLlmRun(phase1State, context.req.param("id"));
-    return context.json({ ok: true });
+    await enqueueRetryRun(runtime.repository, runtime.queues, context.req.param("id"));
+    return context.json({ ok: true, accepted: true }, 202);
   });
 
   app.post("/api/llm/reprocess", async (context) => {
     const body = await requestBody(context.req.raw);
-    await reprocessLlmTask(phase1State, reprocessScopeValue(body.scope));
-    return context.json({ ok: true });
+    await enqueueReprocess(runtime.repository, runtime.queues, reprocessScopeValue(body.scope));
+    return context.json({ ok: true, accepted: true }, 202);
   });
 
-  app.get("/api/settings", (context) => context.json(phase1State.settings));
+  app.get("/api/settings", async (context) => context.json(await runtime.repository.getSettings()));
 
   app.put("/api/settings", async (context) => {
     const body = await requestBody(context.req.raw);
-    phase1State.settings = {
-      ...phase1State.settings,
-      targetChannelIds: stringArray(body.targetChannelIds, phase1State.settings.targetChannelIds),
-      excludedChannelIds: stringArray(
-        body.excludedChannelIds,
-        phase1State.settings.excludedChannelIds,
-      ),
+    const settings = await runtime.repository.getSettings();
+    const updated = await runtime.repository.updateSettings({
+      ...settings,
+      targetChannelIds: stringArray(body.targetChannelIds, settings.targetChannelIds),
+      excludedChannelIds: stringArray(body.excludedChannelIds, settings.excludedChannelIds),
       adminNotificationChannelId: stringValue(
         body.adminNotificationChannelId,
-        phase1State.settings.adminNotificationChannelId,
+        settings.adminNotificationChannelId,
       ),
-      retentionDays: numberValue(body.retentionDays, phase1State.settings.retentionDays),
-      characterName: stringValue(body.characterName, phase1State.settings.characterName),
-      characterTone: stringValue(body.characterTone, phase1State.settings.characterTone),
+      retentionDays: numberValue(body.retentionDays, settings.retentionDays),
+      characterName: stringValue(body.characterName, settings.characterName),
+      characterTone: stringValue(body.characterTone, settings.characterTone),
       updatedAt: nowIso(),
-    };
-    return context.json(phase1State.settings);
+    });
+    return context.json(updated);
   });
 
-  app.get("/api/auto-reply/policy", (context) => context.json(phase1State.autoReplyPolicy));
+  app.get("/api/auto-reply/policy", async (context) =>
+    context.json(await runtime.repository.getAutoReplyPolicy()),
+  );
 
   app.put("/api/auto-reply/policy", async (context) => {
     const body = await requestBody(context.req.raw);
-    const mode = modeValue(body.mode, phase1State.autoReplyPolicy.mode);
+    const policy = await runtime.repository.getAutoReplyPolicy();
+    const mode = modeValue(body.mode, policy.mode);
     const enabled =
-      typeof body.enabled === "boolean"
-        ? body.enabled && mode !== "disabled"
-        : phase1State.autoReplyPolicy.enabled && mode !== "disabled";
-    phase1State.autoReplyPolicy = {
-      ...phase1State.autoReplyPolicy,
+      typeof body.enabled === "boolean" ? body.enabled && mode !== "disabled" : policy.enabled;
+    const updated = await runtime.repository.updateAutoReplyPolicy({
+      ...policy,
       enabled,
       mode,
-      allowedChannelIds: stringArray(
-        body.allowedChannelIds,
-        phase1State.autoReplyPolicy.allowedChannelIds,
-      ),
-      allowedLabels: labelArray(body.allowedLabels, phase1State.autoReplyPolicy.allowedLabels),
-      allowedCategories: categoryArray(
-        body.allowedCategories,
-        phase1State.autoReplyPolicy.allowedCategories,
-      ),
-      minConfidence: numberValue(body.minConfidence, phase1State.autoReplyPolicy.minConfidence),
+      allowedChannelIds: stringArray(body.allowedChannelIds, policy.allowedChannelIds),
+      allowedLabels: labelArray(body.allowedLabels, policy.allowedLabels),
+      allowedCategories: categoryArray(body.allowedCategories, policy.allowedCategories),
+      minConfidence: numberValue(body.minConfidence, policy.minConfidence),
       requireSourceForFaq:
         typeof body.requireSourceForFaq === "boolean"
           ? body.requireSourceForFaq
-          : phase1State.autoReplyPolicy.requireSourceForFaq,
+          : policy.requireSourceForFaq,
       updatedAt: nowIso(),
-    };
-    return context.json(phase1State.autoReplyPolicy);
+    });
+    return context.json(updated);
   });
 
-  app.get("/api/auto-replies", (context) =>
-    context.json(listByCreatedAt(phase1State.autoReplies.values())),
+  app.get("/api/auto-replies", async (context) =>
+    context.json(await runtime.repository.listAutoReplies()),
   );
 
-  app.post("/api/auto-replies/:id/approve", (context) => {
-    const reply = approveAutoReply(phase1State, context.req.param("id"), "alpha-admin");
+  app.post("/api/auto-replies/:id/approve", async (context) => {
+    const reply = await approveAutoReplyInRepository(
+      runtime.repository,
+      runtime.queues,
+      context.req.param("id"),
+      "alpha-admin",
+    );
     return context.json(reply);
   });
 
-  app.post("/api/auto-replies/:id/reject", (context) =>
-    context.json(rejectAutoReply(phase1State, context.req.param("id"))),
+  app.post("/api/auto-replies/:id/reject", async (context) =>
+    context.json(await rejectAutoReplyInRepository(runtime.repository, context.req.param("id"))),
   );
 
   app.post("/api/auto-replies/:id/feedback", async (context) => {
     const body = await requestBody(context.req.raw);
-    const feedback = recordFeedback(
-      phase1State,
-      "auto_reply",
-      context.req.param("id"),
-      feedbackKind(body.feedbackKind),
-      stringValue(body.note, ""),
+    return context.json(
+      await recordFeedbackInRepository(
+        runtime.repository,
+        "auto_reply",
+        context.req.param("id"),
+        feedbackKind(body.feedbackKind),
+        stringValue(body.note, ""),
+      ),
     );
-    return context.json(feedback);
   });
 
-  app.post("/api/import/sample-log", async (context) => {
-    const result = await importSampleLog(phase1State);
-    await refreshFaqCandidates(phase1State);
-    return context.json(result);
+  app.post("/api/import/sample-log", async (context) =>
+    context.json(await enqueueSampleLog(runtime.repository, runtime.queues), 202),
+  );
+
+  app.get("/api/messages", async (context) => {
+    const periodStart = context.req.query("periodStart");
+    const periodEnd = context.req.query("periodEnd");
+    const channelId = context.req.query("channelId");
+    const label = context.req.query("label");
+    const filters: MessageFilters = {
+      ...(periodStart === undefined ? {} : { periodStart }),
+      ...(periodEnd === undefined ? {} : { periodEnd }),
+      ...(channelId === undefined ? {} : { channelId }),
+      ...(label === undefined ? {} : { label }),
+    };
+    return context.json(await runtime.repository.listMessages(filters));
   });
 
-  app.get("/api/messages", (context) =>
-    context.json(listByIngestedAt(phase1State.messages.values())),
+  app.get("/api/classifications", async (context) =>
+    context.json(await runtime.repository.listClassifications()),
   );
 
-  app.get("/api/classifications", (context) =>
-    context.json(listByCreatedAt(phase1State.classifications.values())),
-  );
-
-  app.get("/api/notifications", (context) =>
-    context.json(listByCreatedAt(phase1State.notifications.values())),
+  app.get("/api/notifications", async (context) =>
+    context.json(await runtime.repository.listNotifications()),
   );
 
   app.post("/api/notifications/:id/feedback", async (context) => {
     const body = await requestBody(context.req.raw);
     return context.json(
-      recordFeedback(
-        phase1State,
+      await recordFeedbackInRepository(
+        runtime.repository,
         "notification",
         context.req.param("id"),
         feedbackKind(body.feedbackKind),
@@ -262,19 +263,23 @@ export function createApiApp() {
     );
   });
 
-  app.get("/api/faq-candidates", (context) => {
-    return context.json(listByCreatedAt(phase1State.faqCandidates.values()));
-  });
+  app.get("/api/faq-candidates", async (context) =>
+    context.json(await runtime.repository.listFaqCandidates()),
+  );
 
   app.post("/api/faq-candidates/:id/feedback", async (context) => {
     const body = await requestBody(context.req.raw);
     const status = stringValue(body.status, "candidate") as FaqCandidateStatus;
     if (["candidate", "accepted", "rejected", "needs_review"].includes(status)) {
-      updateFaqCandidateStatus(phase1State, context.req.param("id"), status);
+      await updateFaqCandidateStatusInRepository(
+        runtime.repository,
+        context.req.param("id"),
+        status,
+      );
     }
     return context.json(
-      recordFeedback(
-        phase1State,
+      await recordFeedbackInRepository(
+        runtime.repository,
         "faq_candidate",
         context.req.param("id"),
         feedbackKind(body.feedbackKind),
@@ -283,33 +288,42 @@ export function createApiApp() {
     );
   });
 
-  app.post("/api/reports/weekly", async (context) => {
+  app.post("/api/faq-candidates/generate", async (context) => {
     const body = await requestBody(context.req.raw);
-    const report = await generateWeeklyReport(
-      phase1State,
-      stringValue(body.periodStart, "2026-01-01"),
-      stringValue(body.periodEnd, "2026-01-07"),
-    );
-    if (report === null) {
-      return context.json({ error: "weekly report generation failed" }, 500);
-    }
-    return context.json(report);
+    const payload: FaqGeneratePayload = {
+      periodStart: stringValue(body.periodStart, ""),
+      periodEnd: stringValue(body.periodEnd, ""),
+    };
+    await runtime.queues.add("faq.generate", payload);
+    return context.json({ ok: true, accepted: true }, 202);
   });
 
-  app.get("/api/reports/weekly", (context) =>
-    context.json(listByCreatedAt(phase1State.weeklyReports.values())),
+  app.post("/api/reports/weekly", async (context) => {
+    const body = await requestBody(context.req.raw);
+    const settings = await runtime.repository.getSettings();
+    const payload: ReportWeeklyPayload = {
+      periodStart: stringValue(body.periodStart, "2026-01-01"),
+      periodEnd: stringValue(body.periodEnd, "2026-01-07"),
+      channelIds: settings.targetChannelIds,
+    };
+    await runtime.queues.add("report.weekly", payload);
+    return context.json({ ok: true, accepted: true, payload }, 202);
+  });
+
+  app.get("/api/reports/weekly", async (context) =>
+    context.json(await runtime.repository.listWeeklyReports()),
   );
 
-  app.get("/api/reports/weekly/:id", (context) => {
-    const report = phase1State.weeklyReports.get(context.req.param("id"));
-    return report === undefined ? context.json({ error: "not found" }, 404) : context.json(report);
+  app.get("/api/reports/weekly/:id", async (context) => {
+    const report = await runtime.repository.getWeeklyReport(context.req.param("id"));
+    return report === null ? context.json({ error: "not found" }, 404) : context.json(report);
   });
 
   app.post("/api/reports/weekly/:id/feedback", async (context) => {
     const body = await requestBody(context.req.raw);
     return context.json(
-      recordFeedback(
-        phase1State,
+      await recordFeedbackInRepository(
+        runtime.repository,
         "weekly_report",
         context.req.param("id"),
         feedbackKind(body.feedbackKind),
@@ -320,5 +334,3 @@ export function createApiApp() {
 
   return app;
 }
-
-export const apiApp = createApiApp();

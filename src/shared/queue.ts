@@ -10,10 +10,17 @@ export const queueNames = [
 
 export type QueueName = (typeof queueNames)[number];
 
-export type DiscordIngestPayload = {
-  readonly kind: "discord_event" | "sample_record";
-  readonly recordId?: string;
-};
+export type DiscordIngestPayload =
+  | {
+      readonly kind: "discord_event";
+      readonly event: DiscordEvent;
+    }
+  | {
+      readonly kind: "sample_record";
+      readonly record: SampleLogRecord;
+      readonly index: number;
+      readonly recordId?: string;
+    };
 
 export type MessageClassifyPayload = {
   readonly messageId: string;
@@ -59,3 +66,4 @@ export function assertKnownQueueName(name: string): asserts name is QueueName {
     throw new Error(`unknown queue name: ${name}`);
   }
 }
+import type { DiscordEvent, SampleLogRecord } from "./types.js";
