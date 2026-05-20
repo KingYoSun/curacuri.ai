@@ -10,6 +10,10 @@
   },
   "scripts": {
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test",
+    "dev:api": "tsx src/api/server.ts",
+    "dev:bot": "tsx src/bot/bot.ts",
+    "dev:dashboard": "vite",
+    "dev:worker": "tsx src/worker/worker.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format:check": "prettier --check .",
@@ -18,11 +22,27 @@
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
     "eslint": "^9.0.0",
     "lefthook": "^1.0.0",
     "prettier": "^3.0.0",
+    "tsx": "^4.22.3",
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.0.0",
+    "vite": "^8.0.13",
     "vitest": "^4.0.0"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.0.3",
+    "bullmq": "^5.76.10",
+    "discord.js": "^14.26.4",
+    "hono": "^4.12.21",
+    "ioredis": "^5.10.1",
+    "pg": "^8.21.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
   }
 }

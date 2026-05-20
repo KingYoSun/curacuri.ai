@@ -6,16 +6,10 @@ Discord サーバー内の質問、要望、不満、バグ報告、盛り上が
 
 ## 現在の状態
 
-このリポジトリは、アプリケーション本体の実装前段階です。現在は Codex 中心の開発を始めるための最小実行可能ハーネスと、Phase
-1 Dogfood Alpha の実装仕様を整備しています。
+このリポジトリは、Codex 中心の開発ハーネスと Phase 1 Dogfood Alpha の縦断実装を含みます。
 
-まだ以下は定義していません。
-
-- アプリケーション本体の実装コード
-- デプロイ構成
-
-Phase 1で導入する予定のアプリケーション API、データベーススキーマ、Redis queue 名、Discord
-Bot の振る舞い、自動返信境界は `docs/specs/phase-1-dogfood-alpha.md` に記載しています。
+Phase
+1 では、サンプルログ取り込み、投稿分類、重要通知候補、FAQ候補、限定自動返信判定、週次レポート、管理者フィードバック、Alpha管理画面の最初の動線を実装しています。
 
 ## 技術方針
 
@@ -46,10 +40,27 @@ pnpm typecheck
 pnpm lint
 pnpm format:check
 pnpm test
+pnpm dev:api
+pnpm dev:dashboard
+pnpm dev:worker
+pnpm dev:bot
 ```
 
 `pnpm check`
 は、型チェック、Lint、フォーマット確認、テストをまとめて実行するローカルの総合チェックです。
+
+API は `http://localhost:8787`、Dashboard は `http://localhost:5173`
+で起動します。Dashboard からサンプルログ投入と週次レポート生成を実行できます。
+
+Docker Compose で確認する場合は次を使います。
+
+```sh
+docker compose up --build
+```
+
+Discord 実接続には `DISCORD_TOKEN` と Message Content
+Intent が必要です。DMは取り込まず、`guild_settings.target_channel_ids`
+に含まれる公開チャンネルだけを対象にします。
 
 ## ドキュメント
 
