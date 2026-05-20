@@ -1,5 +1,7 @@
 # Phase 1 Dogfood Alpha 実装ログ
 
+Phase 1 の残タスクは `docs/specs/phase-1-remaining-tasks.md` に整理する。
+
 ## 2026-05-20
 
 ### 仕様外の追加判断
