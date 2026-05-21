@@ -4,13 +4,20 @@ import { Client, GatewayIntentBits, Partials, type Message as DiscordMessage } f
 
 import { shouldIngestDiscordEvent } from "../app/intake.js";
 import { createAppRuntime } from "../app/runtime.js";
+import {
+  readDiscordBotAuthorTestGate,
+  shouldProcessDiscordMessage,
+  validateDiscordBotAuthorTestGate,
+} from "./message-filter.js";
 import type { DiscordEvent } from "../shared/types.js";
 
+const botAuthorTestGate = readDiscordBotAuthorTestGate();
+validateDiscordBotAuthorTestGate(botAuthorTestGate);
 const runtime = await createAppRuntime();
 const token = process.env.DISCORD_TOKEN;
 
 function isProcessableMessage(message: DiscordMessage): boolean {
-  return !message.author.bot && message.content.trim().length > 0;
+  return shouldProcessDiscordMessage(message, botAuthorTestGate);
 }
 
 if (token === undefined || token.trim().length === 0) {

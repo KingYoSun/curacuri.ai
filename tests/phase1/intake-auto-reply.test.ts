@@ -4,8 +4,140 @@ import { classifyMessage } from "../../src/app/classifier.js";
 import { decideAutoReply } from "../../src/app/auto-reply.js";
 import { normalizeSampleRecord, shouldIngestDiscordEvent } from "../../src/app/intake.js";
 import { createDefaultAutoReplyPolicy, createDefaultSettings } from "../../src/app/settings.js";
+import {
+  readDiscordBotAuthorTestGate,
+  shouldProcessDiscordMessage,
+  validateDiscordBotAuthorTestGate,
+  type DiscordBotAuthorTestGate,
+} from "../../src/bot/message-filter.js";
+
+const disabledBotAuthorGate: DiscordBotAuthorTestGate = {
+  allowBotAuthors: false,
+  allowedBotAuthorIds: [],
+  curacuriEnv: undefined,
+  nodeEnv: undefined,
+};
 
 describe("intake and auto reply boundaries", () => {
+  it("keeps ordinary bot authors out of Discord ingestion", () => {
+    expect(
+      shouldProcessDiscordMessage(
+        {
+          author: { id: "bot-1", bot: true },
+          content: "質問です",
+        },
+        disabledBotAuthorGate,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows only explicit test bot authors outside production", () => {
+    const gate = readDiscordBotAuthorTestGate({
+      DISCORD_TEST_ALLOW_BOT_AUTHORS: "true",
+      DISCORD_TEST_ALLOWED_BOT_AUTHOR_IDS: "tester-bot",
+      CURACURI_ENV: "dogfood",
+    });
+
+    validateDiscordBotAuthorTestGate(gate);
+
+    expect(
+      shouldProcessDiscordMessage(
+        {
+          author: { id: "tester-bot", bot: true },
+          content: "検証用の質問です",
+        },
+        gate,
+      ),
+    ).toBe(true);
+
+    expect(
+      shouldProcessDiscordMessage(
+        {
+          author: { id: "other-bot", bot: true },
+          content: "検証用の質問です",
+        },
+        gate,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not allow test bot authors in production environments", () => {
+    const curacuriProductionGate = readDiscordBotAuthorTestGate({
+      DISCORD_TEST_ALLOW_BOT_AUTHORS: "true",
+      DISCORD_TEST_ALLOWED_BOT_AUTHOR_IDS: "tester-bot",
+      CURACURI_ENV: "production",
+    });
+    const nodeProductionGate = readDiscordBotAuthorTestGate({
+      DISCORD_TEST_ALLOW_BOT_AUTHORS: "true",
+      DISCORD_TEST_ALLOWED_BOT_AUTHOR_IDS: "tester-bot",
+      CURACURI_ENV: "dogfood",
+      NODE_ENV: "production",
+    });
+
+    expect(() => {
+      validateDiscordBotAuthorTestGate(curacuriProductionGate);
+    }).toThrow("CURACURI_ENV=production");
+    expect(() => {
+      validateDiscordBotAuthorTestGate(nodeProductionGate);
+    }).toThrow("NODE_ENV=production");
+
+    expect(
+      shouldProcessDiscordMessage(
+        {
+          author: { id: "tester-bot", bot: true },
+          content: "検証用の質問です",
+        },
+        curacuriProductionGate,
+      ),
+    ).toBe(false);
+  });
+
+  it("requires explicit env and allowlist before accepting test bot authors", () => {
+    const noAllowlistGate = readDiscordBotAuthorTestGate({
+      DISCORD_TEST_ALLOW_BOT_AUTHORS: "true",
+      CURACURI_ENV: "dogfood",
+    });
+    const noEnvironmentGate = readDiscordBotAuthorTestGate({
+      DISCORD_TEST_ALLOW_BOT_AUTHORS: "true",
+      DISCORD_TEST_ALLOWED_BOT_AUTHOR_IDS: "tester-bot",
+    });
+
+    expect(() => {
+      validateDiscordBotAuthorTestGate(noAllowlistGate);
+    }).toThrow("DISCORD_TEST_ALLOWED_BOT_AUTHOR_IDS");
+    expect(() => {
+      validateDiscordBotAuthorTestGate(noEnvironmentGate);
+    }).toThrow("CURACURI_ENV");
+
+    expect(
+      shouldProcessDiscordMessage(
+        {
+          author: { id: "tester-bot", bot: true },
+          content: "検証用の質問です",
+        },
+        noAllowlistGate,
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps empty Discord messages out even for test bot authors", () => {
+    const gate = readDiscordBotAuthorTestGate({
+      DISCORD_TEST_ALLOW_BOT_AUTHORS: "true",
+      DISCORD_TEST_ALLOWED_BOT_AUTHOR_IDS: "tester-bot",
+      CURACURI_ENV: "dogfood",
+    });
+
+    expect(
+      shouldProcessDiscordMessage(
+        {
+          author: { id: "tester-bot", bot: true },
+          content: "   ",
+        },
+        gate,
+      ),
+    ).toBe(false);
+  });
+
   it("filters DM and excluded channels", () => {
     const settings = {
       ...createDefaultSettings(),

@@ -1,0 +1,11 @@
+services:
+  discord-mcp:
+    image: saseq/discord-mcp:latest
+    container_name: curacuri-discord-mcp
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: http
+      DISCORD_TOKEN: ${DISCORD_MCP_TOKEN:?DISCORD_MCP_TOKEN is required for the tester bot}
+      DISCORD_GUILD_ID: ${DISCORD_MCP_GUILD_ID:-}
+    ports:
+      - "${DISCORD_MCP_PORT:-8085}:8085"

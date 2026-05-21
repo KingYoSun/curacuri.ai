@@ -85,12 +85,14 @@ Docker Compose もリポジトリルートの `.env` を参照します。秘密
 
 Discord 実接続には `DISCORD_TOKEN` と Message Content
 Intent が必要です。DMは取り込まず、`guild_settings.target_channel_ids`
-に含まれる公開チャンネルだけを対象にします。
+に含まれる公開チャンネルだけを対象にします。SaseQ/discord-mcp を検証者役botとして使う繰り返し検証手順は
+`docs/discord-mcp-verification.md` を参照してください。
 
 ## ドキュメント
 
 - プロダクト企画: `proposal.md`
 - Phase 1 仕様: `docs/specs/phase-1-dogfood-alpha.md`
+- Discord MCP 実接続検証: `docs/discord-mcp-verification.md`
 - エージェント向け入口: `AGENTS.md`
 - ハーネス運用: `docs/harness.md`
 - 技術判断: `docs/adr/`
