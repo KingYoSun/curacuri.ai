@@ -12,6 +12,7 @@ import {
   updateFaqCandidateStatusInRepository,
 } from "../app/persistent-workflow.js";
 import type { AppRuntime } from "../app/runtime.js";
+import { syncSettingsWithAutoReplyPolicy } from "../app/settings.js";
 import {
   autoReplyCategories,
   autoReplyModes,
@@ -103,6 +104,14 @@ async function requestBody(request: Request): Promise<Record<string, unknown>> {
   return isRecord(body) ? body : {};
 }
 
+async function getSettingsForResponse(runtime: AppRuntime) {
+  const [settings, policy] = await Promise.all([
+    runtime.repository.getSettings(),
+    runtime.repository.getAutoReplyPolicy(),
+  ]);
+  return syncSettingsWithAutoReplyPolicy(settings, policy);
+}
+
 export function createApiApp(runtime: AppRuntime) {
   const app = new Hono();
 
@@ -145,22 +154,24 @@ export function createApiApp(runtime: AppRuntime) {
     return context.json({ ok: true, accepted: true }, 202);
   });
 
-  app.get("/api/settings", async (context) => context.json(await runtime.repository.getSettings()));
+  app.get("/api/settings", async (context) => context.json(await getSettingsForResponse(runtime)));
 
   app.put("/api/settings", async (context) => {
     const body = await requestBody(context.req.raw);
     const settings = await runtime.repository.getSettings();
+    const policy = await runtime.repository.getAutoReplyPolicy();
+    const syncedSettings = syncSettingsWithAutoReplyPolicy(settings, policy);
     const updated = await runtime.repository.updateSettings({
-      ...settings,
-      targetChannelIds: stringArray(body.targetChannelIds, settings.targetChannelIds),
-      excludedChannelIds: stringArray(body.excludedChannelIds, settings.excludedChannelIds),
+      ...syncedSettings,
+      targetChannelIds: stringArray(body.targetChannelIds, syncedSettings.targetChannelIds),
+      excludedChannelIds: stringArray(body.excludedChannelIds, syncedSettings.excludedChannelIds),
       adminNotificationChannelId: stringValue(
         body.adminNotificationChannelId,
-        settings.adminNotificationChannelId,
+        syncedSettings.adminNotificationChannelId,
       ),
-      retentionDays: numberValue(body.retentionDays, settings.retentionDays),
-      characterName: stringValue(body.characterName, settings.characterName),
-      characterTone: stringValue(body.characterTone, settings.characterTone),
+      retentionDays: numberValue(body.retentionDays, syncedSettings.retentionDays),
+      characterName: stringValue(body.characterName, syncedSettings.characterName),
+      characterTone: stringValue(body.characterTone, syncedSettings.characterTone),
       updatedAt: nowIso(),
     });
     return context.json(updated);
@@ -188,6 +199,11 @@ export function createApiApp(runtime: AppRuntime) {
         typeof body.requireSourceForFaq === "boolean"
           ? body.requireSourceForFaq
           : policy.requireSourceForFaq,
+      updatedAt: nowIso(),
+    });
+    const settings = await runtime.repository.getSettings();
+    await runtime.repository.updateSettings({
+      ...syncSettingsWithAutoReplyPolicy(settings, updated),
       updatedAt: nowIso(),
     });
     return context.json(updated);

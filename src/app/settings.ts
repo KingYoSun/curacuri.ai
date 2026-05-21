@@ -62,3 +62,17 @@ export function createDefaultAutoReplyPolicy(settings: GuildSettings): AutoReply
     updatedAt: now,
   };
 }
+
+export function syncSettingsWithAutoReplyPolicy(
+  settings: GuildSettings,
+  policy: AutoReplyPolicy,
+): GuildSettings {
+  return {
+    ...settings,
+    autoReplyMode: policy.enabled ? policy.mode : "disabled",
+    autoReplyAllowedChannelIds: policy.allowedChannelIds,
+    autoReplyAllowedLabels: policy.allowedLabels,
+    autoReplyAllowedCategories: policy.allowedCategories,
+    autoReplyMinConfidence: policy.minConfidence,
+  };
+}
