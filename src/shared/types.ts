@@ -92,7 +92,9 @@ export type NotificationType = (typeof notificationTypes)[number];
 
 export type NotificationStatus = "pending" | "sent" | "dismissed" | "failed";
 
-export type FaqCandidateStatus = "candidate" | "accepted" | "rejected" | "needs_review";
+export const faqCandidateStatuses = ["candidate", "accepted", "rejected", "needs_review"] as const;
+
+export type FaqCandidateStatus = (typeof faqCandidateStatuses)[number];
 
 export type CurrentAnswerStatus =
   | "unknown"

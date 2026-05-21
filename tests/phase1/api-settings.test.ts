@@ -73,6 +73,9 @@ function createSettingsRuntime(): AppRuntime {
     markNotificationFailed() {
       return unsupportedPromise();
     },
+    dismissNotification() {
+      return unsupportedPromise();
+    },
     listAutoReplies() {
       return unsupportedPromise();
     },
@@ -92,6 +95,9 @@ function createSettingsRuntime(): AppRuntime {
       return unsupportedPromise();
     },
     updateFaqCandidateStatus() {
+      return unsupportedPromise();
+    },
+    updateFaqCandidate() {
       return unsupportedPromise();
     },
     listWeeklyReports() {

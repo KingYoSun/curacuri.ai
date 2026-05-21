@@ -1,99 +1,80 @@
-import type React from "react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CheckIcon, ChevronsUpDownIcon, Loader2Icon, SearchIcon } from "lucide-react";
+import { toast } from "sonner";
 
-type Settings = {
-  readonly targetChannelIds: readonly string[];
-  readonly excludedChannelIds: readonly string[];
-  readonly adminNotificationChannelId: string;
-  readonly retentionDays: number;
-  readonly characterName: string;
-  readonly characterTone: string;
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Toaster } from "@/components/ui/sonner";
+import {
+  autoReplyCategories,
+  autoReplyModes,
+  classificationLabels,
+  faqCandidateStatuses,
+  type FaqCandidate,
+  type FaqCandidateStatus,
+} from "../shared/types.js";
+import { loadDashboardData, patchFaqCandidate, postFeedback, sendJson } from "./api.js";
+import {
+  ConfirmAction,
+  CountBadge,
+  EmptyList,
+  ErrorBanner,
+  FeedbackForm,
+  MetricCard,
+  SectionCard,
+  SelectField,
+  TextAreaField,
+  TextField,
+} from "./DashboardComponents.js";
+import {
+  autoReplyCategoryLabels,
+  autoReplyStatusLabels,
+  confidenceLabel,
+  faqPatchForStatus,
+  faqStatusLabels,
+  importanceLabels,
+  notificationStatusLabels,
+  weeklyReportStatusLabels,
+} from "./labels.js";
+import type {
+  DashboardData,
+  FeedbackDraft,
+  MessageFilters,
+  PolicyDraft,
+  SettingsDraft,
+} from "./types.js";
+
+const DEFAULT_REPORT_START = "2026-05-11";
+const DEFAULT_REPORT_END = "2026-05-17";
+const INITIAL_LIMIT = 8;
+
+type ActionKey =
+  | "auto-reply-approve"
+  | "auto-reply-reject"
+  | "faq-feedback"
+  | "faq-save"
+  | "feedback"
+  | "filter"
+  | "llm-reprocess"
+  | "llm-retry"
+  | "notification-dismiss"
+  | "report-generate"
+  | "sample-import"
+  | "settings-save"
+  | "policy-save";
+
+const emptyFilters: MessageFilters = {
+  periodStart: "",
+  periodEnd: "",
+  channelId: "",
+  label: "",
 };
-
-type AutoReplyPolicy = {
-  readonly enabled: boolean;
-  readonly mode: string;
-  readonly allowedChannelIds: readonly string[];
-  readonly allowedLabels: readonly string[];
-  readonly allowedCategories: readonly string[];
-  readonly minConfidence: number;
-  readonly requireSourceForFaq: boolean;
-};
-
-type LlmStatus = {
-  readonly configured: boolean;
-  readonly modelName: string;
-  readonly baseUrl: string;
-  readonly concurrency: number;
-  readonly responseFormat: string;
-  readonly failedCount: number;
-};
-
-type LlmRun = {
-  readonly id: string;
-  readonly taskType: string;
-  readonly targetId: string;
-  readonly status: string;
-  readonly modelName: string;
-  readonly errorCode: string | null;
-  readonly errorMessage: string | null;
-  readonly createdAt: string;
-};
-
-type NotificationItem = {
-  readonly id: string;
-  readonly title: string;
-  readonly body: string;
-  readonly importance: string;
-  readonly status: string;
-  readonly sentToChannelId: string;
-  readonly sentMessageId: string | null;
-  readonly failureReason: string | null;
-};
-
-type FaqCandidate = {
-  readonly id: string;
-  readonly topic: string;
-  readonly draftQuestion: string;
-  readonly draftAnswer: string;
-  readonly status: string;
-  readonly confidence: number;
-};
-
-type AutoReply = {
-  readonly id: string;
-  readonly body: string;
-  readonly status: string;
-  readonly replyCategory: string;
-  readonly confidence: number;
-  readonly decisionReason: string;
-  readonly sentMessageId: string | null;
-};
-
-type WeeklyReport = {
-  readonly id: string;
-  readonly periodStart: string;
-  readonly periodEnd: string;
-  readonly shortBody: string;
-  readonly detailedBody: string;
-  readonly status: string;
-};
-
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path);
-  if (!response.ok) throw new Error(`${path} failed`);
-  return (await response.json()) as T;
-}
-
-async function sendJson<T>(method: "POST" | "PUT", path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method,
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw new Error(`${path} failed`);
-  return (await response.json()) as T;
-}
 
 function lines(value: readonly string[]): string {
   return value.join("\n");
@@ -106,547 +87,1316 @@ function parseLines(value: string): readonly string[] {
     .filter((item) => item.length > 0);
 }
 
+function settingsDraftFromData(data: DashboardData["settings"]): SettingsDraft {
+  return {
+    targetChannelIds: lines(data.targetChannelIds),
+    excludedChannelIds: lines(data.excludedChannelIds),
+    adminNotificationChannelId: data.adminNotificationChannelId,
+    retentionDays: data.retentionDays,
+    characterName: data.characterName,
+    characterTone: data.characterTone,
+  };
+}
+
+function policyDraftFromData(data: DashboardData["policy"]): PolicyDraft {
+  return {
+    enabled: data.enabled,
+    mode: data.mode,
+    allowedChannelIds: lines(data.allowedChannelIds),
+    allowedLabels: lines(data.allowedLabels),
+    allowedCategories: lines(data.allowedCategories),
+    minConfidence: data.minConfidence,
+    requireSourceForFaq: data.requireSourceForFaq,
+  };
+}
+
+function defaultFeedbackDraft(): FeedbackDraft {
+  return { feedbackKind: "useful", note: "" };
+}
+
+function badgeVariantForStatus(
+  status: string,
+): "default" | "destructive" | "outline" | "secondary" {
+  if (status === "failed" || status === "blocked" || status === "rejected") return "destructive";
+  if (status === "sent" || status === "accepted" || status === "ready") return "default";
+  if (status === "dismissed") return "outline";
+  return "secondary";
+}
+
+function itemLimit<T>(items: readonly T[], limit: number): readonly T[] {
+  return items.slice(0, limit);
+}
+
 export function App() {
-  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
-  const [failedRuns, setFailedRuns] = useState<readonly LlmRun[]>([]);
-  const [notifications, setNotifications] = useState<readonly NotificationItem[]>([]);
-  const [faqCandidates, setFaqCandidates] = useState<readonly FaqCandidate[]>([]);
-  const [autoReplies, setAutoReplies] = useState<readonly AutoReply[]>([]);
-  const [weeklyReports, setWeeklyReports] = useState<readonly WeeklyReport[]>([]);
-  const [messageCount, setMessageCount] = useState(0);
-  const [classificationCount, setClassificationCount] = useState(0);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [settingsDraft, setSettingsDraft] = useState({
-    targetChannelIds: "",
-    excludedChannelIds: "",
-    adminNotificationChannelId: "",
-    retentionDays: 90,
-    characterName: "",
-    characterTone: "",
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [messageFilters, setMessageFilters] = useState<MessageFilters>(emptyFilters);
+  const [settingsDraft, setSettingsDraft] = useState<SettingsDraft | null>(null);
+  const [policyDraft, setPolicyDraft] = useState<PolicyDraft | null>(null);
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const [policyDirty, setPolicyDirty] = useState(false);
+  const [pendingAction, setPendingAction] = useState<ActionKey | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [feedbackDrafts, setFeedbackDrafts] = useState<Record<string, FeedbackDraft>>({});
+  const [faqDrafts, setFaqDrafts] = useState<
+    Record<string, Pick<FaqCandidate, "draftAnswer" | "draftQuestion" | "topic">>
+  >({});
+  const [reportPeriod, setReportPeriod] = useState({
+    periodStart: DEFAULT_REPORT_START,
+    periodEnd: DEFAULT_REPORT_END,
   });
-  const [policyDraft, setPolicyDraft] = useState({
-    enabled: false,
-    mode: "disabled",
-    allowedChannelIds: "",
-    allowedLabels: "",
-    allowedCategories: "",
-    minConfidence: 0.8,
-    requireSourceForFaq: true,
+  const [limits, setLimits] = useState({
+    messages: INITIAL_LIMIT,
+    classifications: INITIAL_LIMIT,
+    notifications: INITIAL_LIMIT,
+    faqCandidates: INITIAL_LIMIT,
+    autoReplies: INITIAL_LIMIT,
+    failedRuns: INITIAL_LIMIT,
+    weeklyReports: 4,
   });
 
-  async function refresh() {
-    const [
-      nextSettings,
-      nextPolicy,
-      messages,
-      classifications,
-      nextNotifications,
-      nextFaqCandidates,
-      nextAutoReplies,
-      nextWeeklyReports,
-      nextLlmStatus,
-      nextFailedRuns,
-    ] = await Promise.all([
-      getJson<Settings>("/api/settings"),
-      getJson<AutoReplyPolicy>("/api/auto-reply/policy"),
-      getJson<readonly unknown[]>("/api/messages"),
-      getJson<readonly unknown[]>("/api/classifications"),
-      getJson<readonly NotificationItem[]>("/api/notifications"),
-      getJson<readonly FaqCandidate[]>("/api/faq-candidates"),
-      getJson<readonly AutoReply[]>("/api/auto-replies"),
-      getJson<readonly WeeklyReport[]>("/api/reports/weekly"),
-      getJson<LlmStatus>("/api/llm/status"),
-      getJson<readonly LlmRun[]>("/api/llm/runs?status=failed"),
-    ]);
-    setNotifications(nextNotifications);
-    setFaqCandidates(nextFaqCandidates);
-    setAutoReplies(nextAutoReplies);
-    setWeeklyReports(nextWeeklyReports);
-    setLlmStatus(nextLlmStatus);
-    setFailedRuns(nextFailedRuns);
-    setMessageCount(messages.length);
-    setClassificationCount(classifications.length);
-    setSettingsDraft({
-      targetChannelIds: lines(nextSettings.targetChannelIds),
-      excludedChannelIds: lines(nextSettings.excludedChannelIds),
-      adminNotificationChannelId: nextSettings.adminNotificationChannelId,
-      retentionDays: nextSettings.retentionDays,
-      characterName: nextSettings.characterName,
-      characterTone: nextSettings.characterTone,
-    });
-    setPolicyDraft({
-      enabled: nextPolicy.enabled,
-      mode: nextPolicy.mode,
-      allowedChannelIds: lines(nextPolicy.allowedChannelIds),
-      allowedLabels: lines(nextPolicy.allowedLabels),
-      allowedCategories: lines(nextPolicy.allowedCategories),
-      minConfidence: nextPolicy.minConfidence,
-      requireSourceForFaq: nextPolicy.requireSourceForFaq,
-    });
-  }
+  const refreshDashboard = useCallback(
+    async (options: { readonly preserveDirtyDrafts: boolean } = { preserveDirtyDrafts: true }) => {
+      const nextData = await loadDashboardData(messageFilters);
+      setData(nextData);
+      if (!options.preserveDirtyDrafts || !settingsDirty) {
+        setSettingsDraft(settingsDraftFromData(nextData.settings));
+        if (!options.preserveDirtyDrafts) setSettingsDirty(false);
+      }
+      if (!options.preserveDirtyDrafts || !policyDirty) {
+        setPolicyDraft(policyDraftFromData(nextData.policy));
+        if (!options.preserveDirtyDrafts) setPolicyDirty(false);
+      }
+      setFaqDrafts((current) => {
+        const next = { ...current };
+        for (const item of nextData.faqCandidates) {
+          next[item.id] ??= {
+            topic: item.topic,
+            draftQuestion: item.draftQuestion,
+            draftAnswer: item.draftAnswer,
+          };
+        }
+        return next;
+      });
+    },
+    [messageFilters, policyDirty, settingsDirty],
+  );
 
   useEffect(() => {
-    void refresh();
-  }, []);
+    void refreshDashboard().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setErrorMessage(message);
+      toast.error("ダッシュボードの読み込みに失敗しました", { description: message });
+    });
+  }, [refreshDashboard]);
 
-  async function runAction(action: () => Promise<void>) {
+  async function runAction(
+    actionKey: ActionKey,
+    successLabel: string,
+    action: () => Promise<void>,
+    options: { readonly preserveDirtyDrafts?: boolean } = {},
+  ) {
     try {
-      setActionError(null);
+      setPendingAction(actionKey);
+      setErrorMessage(null);
+      setSuccessMessage(null);
       await action();
-      await refresh();
+      await refreshDashboard({ preserveDirtyDrafts: options.preserveDirtyDrafts ?? true });
+      setSuccessMessage(successLabel);
+      toast.success(successLabel);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
-      await refresh().catch(() => undefined);
+      const message = error instanceof Error ? error.message : String(error);
+      setErrorMessage(message);
+      toast.error("操作に失敗しました", { description: message });
+      await refreshDashboard().catch(() => undefined);
+    } finally {
+      setPendingAction(null);
     }
   }
 
+  function feedbackDraft(path: string): FeedbackDraft {
+    return feedbackDrafts[path] ?? defaultFeedbackDraft();
+  }
+
+  function updateFeedbackDraft(path: string, draft: FeedbackDraft) {
+    setFeedbackDrafts((current) => ({ ...current, [path]: draft }));
+  }
+
+  function submitFeedback(path: string) {
+    void runAction("feedback", "フィードバックを記録しました", async () => {
+      await postFeedback(path, feedbackDraft(path));
+      updateFeedbackDraft(path, defaultFeedbackDraft());
+    });
+  }
+
+  const metrics = useMemo(
+    () => ({
+      messages: data?.messages.length ?? 0,
+      classifications: data?.classifications.length ?? 0,
+      notifications: data?.notifications.length ?? 0,
+      faqCandidates: data?.faqCandidates.length ?? 0,
+      autoReplies: data?.autoReplies.length ?? 0,
+      weeklyReports: data?.weeklyReports.length ?? 0,
+      failedRuns: data?.llmStatus.failedCount ?? 0,
+    }),
+    [data],
+  );
+
+  const isLoading = data === null;
+
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Dogfood Alpha</p>
-          <h1>curacuri.ai 管理画面</h1>
+    <main className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-6 md:px-6 lg:px-8">
+      <Toaster richColors position="top-right" />
+      <header className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-muted-foreground">Dogfood Alpha</p>
+          <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+            curacuri.ai 管理画面
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            運営者が投稿、分類、通知、FAQ候補、自動返信、週次レポートを確認する画面です。
+          </p>
         </div>
-        <div className="actions">
-          <button
-            type="button"
+        <div className="flex flex-wrap gap-2">
+          <Button
+            disabled={pendingAction === "sample-import"}
+            size="sm"
+            variant="outline"
             onClick={() =>
-              void runAction(() =>
-                sendJson("POST", "/api/import/sample-log", {}).then(() => undefined),
-              )
+              void runAction("sample-import", "サンプル投入を受け付けました", async () => {
+                await sendJson("POST", "/api/import/sample-log", {});
+              })
             }
           >
+            {pendingAction === "sample-import" ? <Loader2Icon className="animate-spin" /> : null}
             サンプル投入
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            disabled={pendingAction === "report-generate"}
+            size="sm"
+            variant="outline"
             onClick={() =>
-              void runAction(() =>
-                sendJson("POST", "/api/reports/weekly", {
-                  periodStart: "2026-01-01",
-                  periodEnd: "2026-01-07",
-                }).then(() => undefined),
-              )
+              void runAction("report-generate", "週次レポート生成を受け付けました", async () => {
+                await sendJson("POST", "/api/reports/weekly", reportPeriod);
+              })
             }
           >
+            {pendingAction === "report-generate" ? <Loader2Icon className="animate-spin" /> : null}
             週次レポート生成
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              void runAction(() =>
-                sendJson("POST", "/api/llm/reprocess", { scope: "all" }).then(() => undefined),
-              )
+          </Button>
+          <ConfirmAction
+            description="全対象のLLM処理を再投入します。キュー投入後、結果の反映には時間がかかります。"
+            disabled={pendingAction !== null}
+            label="LLM一括再実行"
+            pending={pendingAction === "llm-reprocess"}
+            title="LLM生成を一括再実行しますか？"
+            variant="destructive"
+            onConfirm={() =>
+              void runAction("llm-reprocess", "LLM一括再実行を受け付けました", async () => {
+                await sendJson("POST", "/api/llm/reprocess", { scope: "all" });
+              })
             }
-          >
-            LLM一括再実行
-          </button>
+          />
         </div>
       </header>
 
-      {actionError === null ? null : <p className="error-line">{actionError}</p>}
+      {errorMessage === null ? null : <ErrorBanner message={errorMessage} />}
+      {successMessage === null ? null : (
+        <Alert>
+          <CheckIcon className="size-4" />
+          <AlertTitle>完了</AlertTitle>
+          <AlertDescription>{successMessage}</AlertDescription>
+        </Alert>
+      )}
 
-      <section className="metrics" aria-label="運営メトリクス">
-        <Metric label="投稿" value={messageCount} />
-        <Metric label="分類" value={classificationCount} />
-        <Metric label="通知候補" value={notifications.length} />
-        <Metric label="FAQ候補" value={faqCandidates.length} />
-        <Metric label="自動返信ログ" value={autoReplies.length} />
-        <Metric label="週次レポート" value={weeklyReports.length} />
+      <section aria-label="運営メトリクス" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-7">
+        <MetricCard label="投稿" value={metrics.messages} />
+        <MetricCard label="分類" value={metrics.classifications} />
+        <MetricCard label="通知" value={metrics.notifications} />
+        <MetricCard label="FAQ候補" value={metrics.faqCandidates} />
+        <MetricCard label="自動返信" value={metrics.autoReplies} />
+        <MetricCard label="週次レポート" value={metrics.weeklyReports} />
+        <MetricCard
+          label="LLM失敗"
+          tone={metrics.failedRuns > 0 ? "danger" : "default"}
+          value={metrics.failedRuns}
+        />
       </section>
 
-      <section className="grid">
-        <article>
-          <h2>対象設定</h2>
-          <FormTextArea
-            label="対象チャンネル"
-            value={settingsDraft.targetChannelIds}
-            onChange={(value) => {
-              setSettingsDraft({ ...settingsDraft, targetChannelIds: value });
-            }}
-          />
-          <FormTextArea
-            label="対象外チャンネル"
-            value={settingsDraft.excludedChannelIds}
-            onChange={(value) => {
-              setSettingsDraft({ ...settingsDraft, excludedChannelIds: value });
-            }}
-          />
-          <FormInput
-            label="管理者通知チャンネル"
-            value={settingsDraft.adminNotificationChannelId}
-            onChange={(value) => {
-              setSettingsDraft({ ...settingsDraft, adminNotificationChannelId: value });
-            }}
-          />
-          <FormInput
-            label="保存期間（日）"
-            type="number"
-            value={String(settingsDraft.retentionDays)}
-            onChange={(value) => {
-              setSettingsDraft({ ...settingsDraft, retentionDays: Number.parseInt(value, 10) });
-            }}
-          />
-          <FormInput
-            label="キャラクター名"
-            value={settingsDraft.characterName}
-            onChange={(value) => {
-              setSettingsDraft({ ...settingsDraft, characterName: value });
-            }}
-          />
-          <FormInput
-            label="口調"
-            value={settingsDraft.characterTone}
-            onChange={(value) => {
-              setSettingsDraft({ ...settingsDraft, characterTone: value });
-            }}
-          />
-          <button
-            type="button"
-            onClick={() =>
-              void runAction(() =>
-                sendJson("PUT", "/api/settings", {
-                  targetChannelIds: parseLines(settingsDraft.targetChannelIds),
-                  excludedChannelIds: parseLines(settingsDraft.excludedChannelIds),
-                  adminNotificationChannelId: settingsDraft.adminNotificationChannelId,
-                  retentionDays: settingsDraft.retentionDays,
-                  characterName: settingsDraft.characterName,
-                  characterTone: settingsDraft.characterTone,
-                }).then(() => undefined),
-              )
-            }
-          >
-            設定を保存
-          </button>
-        </article>
-
-        <article>
-          <h2>自動返信ポリシー</h2>
-          <label className="field inline-field">
-            <input
-              checked={policyDraft.enabled}
-              type="checkbox"
-              onChange={(event) => {
-                setPolicyDraft({ ...policyDraft, enabled: event.target.checked });
+      {isLoading || settingsDraft === null || policyDraft === null ? (
+        <Card>
+          <CardContent className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
+            <Loader2Icon className="size-4 animate-spin" />
+            ダッシュボードを読み込んでいます。
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          <section className="grid gap-5 xl:grid-cols-2">
+            <SettingsPanel
+              dirty={settingsDirty}
+              draft={settingsDraft}
+              pending={pendingAction === "settings-save"}
+              onChange={(draft) => {
+                setSettingsDraft(draft);
+                setSettingsDirty(true);
+              }}
+              onSave={() =>
+                void runAction(
+                  "settings-save",
+                  "対象設定を保存しました",
+                  async () => {
+                    await sendJson("PUT", "/api/settings", {
+                      targetChannelIds: parseLines(settingsDraft.targetChannelIds),
+                      excludedChannelIds: parseLines(settingsDraft.excludedChannelIds),
+                      adminNotificationChannelId: settingsDraft.adminNotificationChannelId,
+                      retentionDays: settingsDraft.retentionDays,
+                      characterName: settingsDraft.characterName,
+                      characterTone: settingsDraft.characterTone,
+                    });
+                  },
+                  { preserveDirtyDrafts: false },
+                )
+              }
+              onDiscard={() => {
+                setSettingsDraft(settingsDraftFromData(data.settings));
+                setSettingsDirty(false);
               }}
             />
-            自動返信を有効にする
-          </label>
-          <label className="field">
-            <span>モード</span>
-            <select
-              value={policyDraft.mode}
-              onChange={(event) => {
-                setPolicyDraft({ ...policyDraft, mode: event.target.value });
+            <PolicyPanel
+              dirty={policyDirty}
+              draft={policyDraft}
+              pending={pendingAction === "policy-save"}
+              onChange={(draft) => {
+                setPolicyDraft(draft);
+                setPolicyDirty(true);
               }}
-            >
-              <option value="disabled">disabled</option>
-              <option value="intake_only">intake_only</option>
-              <option value="faq_assist">faq_assist</option>
-              <option value="approval_required">approval_required</option>
-            </select>
-          </label>
-          <FormTextArea
-            label="許可チャンネル"
-            value={policyDraft.allowedChannelIds}
-            onChange={(value) => {
-              setPolicyDraft({ ...policyDraft, allowedChannelIds: value });
-            }}
-          />
-          <FormTextArea
-            label="許可ラベル"
-            value={policyDraft.allowedLabels}
-            onChange={(value) => {
-              setPolicyDraft({ ...policyDraft, allowedLabels: value });
-            }}
-          />
-          <FormTextArea
-            label="許可カテゴリ"
-            value={policyDraft.allowedCategories}
-            onChange={(value) => {
-              setPolicyDraft({ ...policyDraft, allowedCategories: value });
-            }}
-          />
-          <FormInput
-            label="最小confidence"
-            type="number"
-            value={String(policyDraft.minConfidence)}
-            onChange={(value) => {
-              setPolicyDraft({ ...policyDraft, minConfidence: Number.parseFloat(value) });
-            }}
-          />
-          <label className="field inline-field">
-            <input
-              checked={policyDraft.requireSourceForFaq}
-              type="checkbox"
-              onChange={(event) => {
-                setPolicyDraft({ ...policyDraft, requireSourceForFaq: event.target.checked });
+              onSave={() =>
+                void runAction(
+                  "policy-save",
+                  "自動返信ポリシーを保存しました",
+                  async () => {
+                    await sendJson("PUT", "/api/auto-reply/policy", {
+                      enabled: policyDraft.enabled,
+                      mode: policyDraft.mode,
+                      allowedChannelIds: parseLines(policyDraft.allowedChannelIds),
+                      allowedLabels: parseLines(policyDraft.allowedLabels),
+                      allowedCategories: parseLines(policyDraft.allowedCategories),
+                      minConfidence: policyDraft.minConfidence,
+                      requireSourceForFaq: policyDraft.requireSourceForFaq,
+                    });
+                  },
+                  { preserveDirtyDrafts: false },
+                )
+              }
+              onDiscard={() => {
+                setPolicyDraft(policyDraftFromData(data.policy));
+                setPolicyDirty(false);
               }}
             />
-            FAQ参照元を必須にする
-          </label>
-          <button
-            type="button"
-            onClick={() =>
-              void runAction(() =>
-                sendJson("PUT", "/api/auto-reply/policy", {
-                  enabled: policyDraft.enabled,
-                  mode: policyDraft.mode,
-                  allowedChannelIds: parseLines(policyDraft.allowedChannelIds),
-                  allowedLabels: parseLines(policyDraft.allowedLabels),
-                  allowedCategories: parseLines(policyDraft.allowedCategories),
-                  minConfidence: policyDraft.minConfidence,
-                  requireSourceForFaq: policyDraft.requireSourceForFaq,
-                }).then(() => undefined),
-              )
-            }
-          >
-            ポリシーを保存
-          </button>
-        </article>
+          </section>
 
-        <article>
-          <h2>LLM接続</h2>
-          <dl>
-            <dt>状態</dt>
-            <dd>{llmStatus?.configured === true ? "設定済み" : "未設定"}</dd>
-            <dt>モデル</dt>
-            <dd>{llmStatus?.modelName ?? "-"}</dd>
-            <dt>Base URL</dt>
-            <dd>{llmStatus?.baseUrl ?? "-"}</dd>
-            <dt>JSON方式</dt>
-            <dd>{llmStatus?.responseFormat ?? "-"}</dd>
-            <dt>同時実行</dt>
-            <dd>{llmStatus?.concurrency ?? "-"}</dd>
-            <dt>失敗run</dt>
-            <dd>{llmStatus?.failedCount ?? 0}件</dd>
-          </dl>
-        </article>
+          <section className="grid gap-5 xl:grid-cols-2">
+            <LlmPanel
+              data={data}
+              limit={limits.failedRuns}
+              pending={pendingAction === "llm-retry"}
+              onRetry={(id) =>
+                void runAction("llm-retry", "LLM runの再実行を受け付けました", async () => {
+                  await sendJson("POST", `/api/llm/runs/${id}/retry`, {});
+                })
+              }
+              onShowMore={() => {
+                setLimits((current) => ({
+                  ...current,
+                  failedRuns: current.failedRuns + INITIAL_LIMIT,
+                }));
+              }}
+            />
+            <ReportGenerator period={reportPeriod} onChange={setReportPeriod} />
+          </section>
 
-        <article>
-          <h2>LLM失敗run</h2>
-          <div className="stack">
-            {failedRuns.length === 0 ? <p>失敗中のLLM生成はありません。</p> : null}
-            {failedRuns.slice(0, 8).map((run) => (
-              <div className="row" key={run.id}>
-                <div>
-                  <strong>{run.taskType}</strong>
-                  <span>{run.targetId}</span>
-                  <p>{run.errorMessage ?? run.errorCode ?? "詳細なし"}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void runAction(() =>
-                      sendJson("POST", `/api/llm/runs/${run.id}/retry`, {}).then(() => undefined),
-                    )
-                  }
-                >
-                  再実行
-                </button>
-              </div>
-            ))}
-          </div>
-        </article>
-      </section>
+          <Tabs defaultValue="messages">
+            <TabsList className="flex h-auto flex-wrap justify-start">
+              <TabsTrigger value="messages">投稿</TabsTrigger>
+              <TabsTrigger value="classifications">分類</TabsTrigger>
+              <TabsTrigger value="notifications">通知</TabsTrigger>
+              <TabsTrigger value="faq">FAQ候補</TabsTrigger>
+              <TabsTrigger value="autoReplies">自動返信</TabsTrigger>
+              <TabsTrigger value="reports">週報</TabsTrigger>
+            </TabsList>
 
-      <Section title="通知一覧">
-        {notifications.slice(0, 12).map((item) => (
-          <div className="row" key={item.id}>
-            <div>
-              <strong>{item.title}</strong>
-              <span>
-                {item.status} / {item.sentToChannelId} / {item.sentMessageId ?? "未送信"}
-              </span>
-              <p>{item.failureReason ?? item.body}</p>
-            </div>
-            <FeedbackButton path={`/api/notifications/${item.id}/feedback`} onDone={refresh} />
-          </div>
-        ))}
-      </Section>
+            <TabsContent value="messages">
+              <MessagesPanel
+                filters={messageFilters}
+                items={data.messages}
+                limit={limits.messages}
+                pending={pendingAction === "filter"}
+                onApplyFilters={() => {
+                  void runAction("filter", "投稿一覧を更新しました", () => Promise.resolve());
+                }}
+                onChangeFilters={setMessageFilters}
+                onShowMore={() => {
+                  setLimits((current) => ({
+                    ...current,
+                    messages: current.messages + INITIAL_LIMIT,
+                  }));
+                }}
+              />
+            </TabsContent>
 
-      <Section title="FAQ候補">
-        {faqCandidates.slice(0, 12).map((item) => (
-          <div className="row" key={item.id}>
-            <div>
-              <strong>{item.topic}</strong>
-              <span>
-                {item.status} / confidence {item.confidence}
-              </span>
-              <p>{item.draftQuestion}</p>
-              <p>{item.draftAnswer}</p>
-            </div>
-            <div className="button-stack">
-              {["accepted", "rejected", "needs_review"].map((status) => (
-                <button
-                  key={status}
-                  type="button"
-                  onClick={() =>
-                    void runAction(() =>
-                      sendJson("POST", `/api/faq-candidates/${item.id}/feedback`, {
-                        status,
-                        feedbackKind: status === "accepted" ? "useful" : "unnecessary",
-                      }).then(() => undefined),
-                    )
-                  }
-                >
-                  {status}
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
-      </Section>
+            <TabsContent value="classifications">
+              <ClassificationsPanel
+                items={data.classifications}
+                limit={limits.classifications}
+                onShowMore={() => {
+                  setLimits((current) => ({
+                    ...current,
+                    classifications: current.classifications + INITIAL_LIMIT,
+                  }));
+                }}
+              />
+            </TabsContent>
 
-      <Section title="自動返信ログ">
-        {autoReplies.slice(0, 12).map((item) => (
-          <div className="row" key={item.id}>
-            <div>
-              <strong>{item.replyCategory}</strong>
-              <span>
-                {item.status} / confidence {item.confidence} / {item.sentMessageId ?? "未送信"}
-              </span>
-              <p>{item.body || item.decisionReason}</p>
-            </div>
-            <div className="button-stack">
-              <button
-                type="button"
-                onClick={() =>
-                  void runAction(() =>
-                    sendJson("POST", `/api/auto-replies/${item.id}/approve`, {}).then(
-                      () => undefined,
-                    ),
-                  )
+            <TabsContent value="notifications">
+              <NotificationsPanel
+                feedbackDraft={feedbackDraft}
+                items={data.notifications}
+                limit={limits.notifications}
+                pendingAction={pendingAction}
+                onDismiss={(id) =>
+                  void runAction("notification-dismiss", "通知を非表示にしました", async () => {
+                    await sendJson("POST", `/api/notifications/${id}/dismiss`, {});
+                  })
                 }
-              >
-                承認
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  void runAction(() =>
-                    sendJson("POST", `/api/auto-replies/${item.id}/reject`, {}).then(
-                      () => undefined,
-                    ),
-                  )
+                onFeedbackChange={updateFeedbackDraft}
+                onFeedbackSubmit={submitFeedback}
+                onShowMore={() => {
+                  setLimits((current) => ({
+                    ...current,
+                    notifications: current.notifications + INITIAL_LIMIT,
+                  }));
+                }}
+              />
+            </TabsContent>
+
+            <TabsContent value="faq">
+              <FaqPanel
+                drafts={faqDrafts}
+                feedbackDraft={feedbackDraft}
+                items={data.faqCandidates}
+                limit={limits.faqCandidates}
+                pendingAction={pendingAction}
+                onDraftChange={(id, draft) => {
+                  setFaqDrafts((current) => ({ ...current, [id]: draft }));
+                }}
+                onFeedbackChange={updateFeedbackDraft}
+                onFeedbackSubmit={submitFeedback}
+                onSave={(item) =>
+                  void runAction("faq-save", "FAQ候補を保存しました", async () => {
+                    await patchFaqCandidate(
+                      item.id,
+                      faqDrafts[item.id] ?? {
+                        topic: item.topic,
+                        draftQuestion: item.draftQuestion,
+                        draftAnswer: item.draftAnswer,
+                      },
+                    );
+                  })
                 }
-              >
-                却下
-              </button>
-              <FeedbackButton path={`/api/auto-replies/${item.id}/feedback`} onDone={refresh} />
-            </div>
-          </div>
-        ))}
-      </Section>
+                onStatus={(item, status) =>
+                  void runAction("faq-feedback", "FAQ候補の状態を更新しました", async () => {
+                    const patch = faqPatchForStatus(status);
+                    await patchFaqCandidate(item.id, { status: patch.status });
+                    await postFeedback(`/api/faq-candidates/${item.id}/feedback`, {
+                      feedbackKind: patch.feedbackKind,
+                      note: `${faqStatusLabels[status]}に変更`,
+                    });
+                  })
+                }
+                onShowMore={() => {
+                  setLimits((current) => ({
+                    ...current,
+                    faqCandidates: current.faqCandidates + INITIAL_LIMIT,
+                  }));
+                }}
+              />
+            </TabsContent>
 
-      <Section title="週次レポート">
-        {weeklyReports.slice(0, 4).map((item) => (
-          <div className="report-item" key={item.id}>
-            <div className="row">
-              <div>
-                <strong>
-                  {item.periodStart} - {item.periodEnd}
-                </strong>
-                <span>{item.status}</span>
-              </div>
-              <FeedbackButton path={`/api/reports/weekly/${item.id}/feedback`} onDone={refresh} />
-            </div>
-            <pre>{item.shortBody}</pre>
-            <details>
-              <summary>詳細版</summary>
-              <pre>{item.detailedBody}</pre>
-            </details>
-          </div>
-        ))}
-      </Section>
+            <TabsContent value="autoReplies">
+              <AutoRepliesPanel
+                feedbackDraft={feedbackDraft}
+                items={data.autoReplies}
+                limit={limits.autoReplies}
+                pendingAction={pendingAction}
+                onApprove={(id) =>
+                  void runAction("auto-reply-approve", "自動返信を承認しました", async () => {
+                    await sendJson("POST", `/api/auto-replies/${id}/approve`, {});
+                  })
+                }
+                onFeedbackChange={updateFeedbackDraft}
+                onFeedbackSubmit={submitFeedback}
+                onReject={(id) =>
+                  void runAction("auto-reply-reject", "自動返信を却下しました", async () => {
+                    await sendJson("POST", `/api/auto-replies/${id}/reject`, {});
+                  })
+                }
+                onShowMore={() => {
+                  setLimits((current) => ({
+                    ...current,
+                    autoReplies: current.autoReplies + INITIAL_LIMIT,
+                  }));
+                }}
+              />
+            </TabsContent>
 
-      <section className="notice">
-        <h2>導入告知テンプレート</h2>
-        <p>
-          指定された公開チャンネルの投稿だけを対象にし、DMは読みません。
-          ユーザーを評価、採点、自動処分せず、質問、要望、不具合報告、不満を運営が見落とさないために整理します。
-          自動返信はAIキャラクターの補助回答であり、公式判断が必要なものは運営者確認に回します。
-        </p>
-      </section>
+            <TabsContent value="reports">
+              <WeeklyReportsPanel
+                feedbackDraft={feedbackDraft}
+                items={data.weeklyReports}
+                limit={limits.weeklyReports}
+                onFeedbackChange={updateFeedbackDraft}
+                onFeedbackSubmit={submitFeedback}
+                onShowMore={() => {
+                  setLimits((current) => ({
+                    ...current,
+                    weeklyReports: current.weeklyReports + 4,
+                  }));
+                }}
+              />
+            </TabsContent>
+          </Tabs>
+
+          <SectionCard title="導入告知テンプレート">
+            <p className="text-sm leading-7 text-muted-foreground">
+              指定された公開チャンネルの投稿だけを対象にし、DMは読みません。
+              ユーザーを評価、採点、自動処分せず、質問、要望、不具合報告、不満を運営が見落とさないために整理します。
+              自動返信はAIキャラクターの補助回答であり、公式判断が必要なものは運営者確認に回します。
+            </p>
+          </SectionCard>
+        </>
+      )}
     </main>
   );
 }
 
-function Metric(props: { readonly label: string; readonly value: number }) {
-  return (
-    <div className="metric">
-      <span>{props.label}</span>
-      <strong>{props.value}</strong>
-    </div>
-  );
-}
-
-function Section(props: { readonly title: string; readonly children: React.ReactNode }) {
-  return (
-    <section className="report">
-      <h2>{props.title}</h2>
-      <div className="stack">{props.children}</div>
-    </section>
-  );
-}
-
-function FormInput(props: {
-  readonly label: string;
-  readonly value: string;
-  readonly type?: string;
-  readonly onChange: (value: string) => void;
+function SettingsPanel(props: {
+  readonly dirty: boolean;
+  readonly draft: SettingsDraft;
+  readonly pending: boolean;
+  readonly onChange: (draft: SettingsDraft) => void;
+  readonly onDiscard: () => void;
+  readonly onSave: () => void;
 }) {
   return (
-    <label className="field">
-      <span>{props.label}</span>
-      <input
-        type={props.type ?? "text"}
-        value={props.value}
-        onChange={(event) => {
-          props.onChange(event.target.value);
-        }}
-      />
-    </label>
+    <SectionCard
+      action={<DirtyBadge dirty={props.dirty} />}
+      description="分析対象チャンネル、保存期間、AIキャラクターの基本設定です。"
+      title="対象設定"
+    >
+      <div className="grid gap-4">
+        <TextAreaField
+          description="1行に1つのチャンネルIDを入力します。"
+          label="対象チャンネル"
+          value={props.draft.targetChannelIds}
+          onChange={(value) => {
+            props.onChange({ ...props.draft, targetChannelIds: value });
+          }}
+        />
+        <TextAreaField
+          description="分析から除外するチャンネルIDです。"
+          label="対象外チャンネル"
+          value={props.draft.excludedChannelIds}
+          onChange={(value) => {
+            props.onChange({ ...props.draft, excludedChannelIds: value });
+          }}
+        />
+        <div className="grid gap-4 md:grid-cols-2">
+          <TextField
+            label="管理者通知チャンネル"
+            value={props.draft.adminNotificationChannelId}
+            onChange={(value) => {
+              props.onChange({ ...props.draft, adminNotificationChannelId: value });
+            }}
+          />
+          <TextField
+            description="1から365日の範囲で指定します。"
+            label="保存期間（日）"
+            max={365}
+            min={1}
+            type="number"
+            value={String(props.draft.retentionDays)}
+            onChange={(value) => {
+              props.onChange({
+                ...props.draft,
+                retentionDays: Number.parseInt(value, 10) || 1,
+              });
+            }}
+          />
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <TextField
+            label="キャラクター名"
+            value={props.draft.characterName}
+            onChange={(value) => {
+              props.onChange({ ...props.draft, characterName: value });
+            }}
+          />
+          <TextField
+            label="口調"
+            value={props.draft.characterTone}
+            onChange={(value) => {
+              props.onChange({ ...props.draft, characterTone: value });
+            }}
+          />
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            disabled={!props.dirty || props.pending}
+            variant="outline"
+            onClick={props.onDiscard}
+          >
+            変更を破棄
+          </Button>
+          <Button disabled={!props.dirty || props.pending} onClick={props.onSave}>
+            {props.pending ? <Loader2Icon className="animate-spin" /> : null}
+            設定を保存
+          </Button>
+        </div>
+      </div>
+    </SectionCard>
   );
 }
 
-function FormTextArea(props: {
-  readonly label: string;
-  readonly value: string;
-  readonly onChange: (value: string) => void;
+function PolicyPanel(props: {
+  readonly dirty: boolean;
+  readonly draft: PolicyDraft;
+  readonly pending: boolean;
+  readonly onChange: (draft: PolicyDraft) => void;
+  readonly onDiscard: () => void;
+  readonly onSave: () => void;
 }) {
   return (
-    <label className="field">
-      <span>{props.label}</span>
-      <textarea
-        value={props.value}
-        onChange={(event) => {
-          props.onChange(event.target.value);
-        }}
-      />
-    </label>
+    <SectionCard
+      action={<DirtyBadge dirty={props.dirty} />}
+      description="自動返信の許可範囲、モード、最低confidenceを制御します。"
+      title="自動返信ポリシー"
+    >
+      <div className="grid gap-4">
+        <div className="flex items-center justify-between rounded-lg border p-3">
+          <div>
+            <div className="text-sm font-medium">自動返信を有効にする</div>
+            <div className="text-sm text-muted-foreground">
+              disabledモードでは自動的に無効です。
+            </div>
+          </div>
+          <Switch
+            checked={props.draft.enabled}
+            onCheckedChange={(checked) => {
+              props.onChange({ ...props.draft, enabled: checked });
+            }}
+          />
+        </div>
+        <SelectField
+          label="モード"
+          options={autoReplyModes.map((mode) => ({ value: mode, label: autoReplyModeLabel(mode) }))}
+          value={props.draft.mode}
+          onChange={(mode) => {
+            props.onChange({ ...props.draft, mode });
+          }}
+        />
+        <TextAreaField
+          label="許可チャンネル"
+          value={props.draft.allowedChannelIds}
+          onChange={(value) => {
+            props.onChange({ ...props.draft, allowedChannelIds: value });
+          }}
+        />
+        <TextAreaField
+          label="許可ラベル"
+          value={props.draft.allowedLabels}
+          onChange={(value) => {
+            props.onChange({ ...props.draft, allowedLabels: value });
+          }}
+        />
+        <SelectField
+          label="許可カテゴリを追加"
+          options={[
+            { value: "", label: "選択してください" },
+            ...autoReplyCategories.map((category) => ({
+              value: category,
+              label: autoReplyCategoryLabels[category],
+            })),
+          ]}
+          value=""
+          onChange={(value) => {
+            if (value.length === 0) return;
+            const current = parseLines(props.draft.allowedCategories);
+            props.onChange({
+              ...props.draft,
+              allowedCategories: lines([...new Set([...current, value])]),
+            });
+          }}
+        />
+        <TextAreaField
+          label="許可カテゴリ"
+          value={props.draft.allowedCategories}
+          onChange={(value) => {
+            props.onChange({ ...props.draft, allowedCategories: value });
+          }}
+        />
+        <div className="grid gap-4 md:grid-cols-2">
+          <TextField
+            description="0.0から1.0の範囲で指定します。"
+            label="最小confidence"
+            max={1}
+            min={0}
+            step={0.01}
+            type="number"
+            value={String(props.draft.minConfidence)}
+            onChange={(value) => {
+              props.onChange({ ...props.draft, minConfidence: Number.parseFloat(value) || 0 });
+            }}
+          />
+          <label className="flex items-center gap-2 rounded-lg border p-3 text-sm font-medium">
+            <Checkbox
+              checked={props.draft.requireSourceForFaq}
+              onCheckedChange={(checked) => {
+                props.onChange({
+                  ...props.draft,
+                  requireSourceForFaq: checked === true,
+                });
+              }}
+            />
+            FAQ参照元を必須にする
+          </label>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            disabled={!props.dirty || props.pending}
+            variant="outline"
+            onClick={props.onDiscard}
+          >
+            変更を破棄
+          </Button>
+          <Button disabled={!props.dirty || props.pending} onClick={props.onSave}>
+            {props.pending ? <Loader2Icon className="animate-spin" /> : null}
+            ポリシーを保存
+          </Button>
+        </div>
+      </div>
+    </SectionCard>
   );
 }
 
-function FeedbackButton(props: { readonly path: string; readonly onDone: () => Promise<void> }) {
-  const [note, setNote] = useState("");
+function LlmPanel(props: {
+  readonly data: DashboardData;
+  readonly limit: number;
+  readonly pending: boolean;
+  readonly onRetry: (id: string) => void;
+  readonly onShowMore: () => void;
+}) {
+  const shown = itemLimit(props.data.failedRuns, props.limit);
   return (
-    <div className="feedback-box">
-      <input
-        value={note}
-        placeholder="feedback"
-        onChange={(event) => {
-          setNote(event.target.value);
-        }}
-      />
-      <button
-        type="button"
-        onClick={() =>
-          void sendJson("POST", props.path, { feedbackKind: "useful", note }).then(props.onDone)
-        }
-      >
-        feedback
-      </button>
-    </div>
+    <SectionCard description="接続状態と失敗runの再実行導線です。" title="LLM接続">
+      <dl className="grid grid-cols-[9rem_minmax(0,1fr)] gap-2 text-sm">
+        <dt className="text-muted-foreground">状態</dt>
+        <dd>{props.data.llmStatus.configured ? "設定済み" : "未設定"}</dd>
+        <dt className="text-muted-foreground">モデル</dt>
+        <dd className="break-all">{props.data.llmStatus.modelName}</dd>
+        <dt className="text-muted-foreground">Base URL</dt>
+        <dd className="break-all">{props.data.llmStatus.baseUrl}</dd>
+        <dt className="text-muted-foreground">JSON方式</dt>
+        <dd>{props.data.llmStatus.responseFormat}</dd>
+        <dt className="text-muted-foreground">同時実行</dt>
+        <dd>{props.data.llmStatus.concurrency}</dd>
+      </dl>
+      <Separator className="my-4" />
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-sm font-medium">失敗run</h3>
+        <CountBadge shown={shown.length} total={props.data.failedRuns.length} />
+      </div>
+      <div className="grid gap-2">
+        {props.data.failedRuns.length === 0 ? (
+          <EmptyList description="失敗中のLLM生成はありません。" title="失敗runはありません" />
+        ) : (
+          shown.map((run) => (
+            <div
+              className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"
+              key={run.id}
+            >
+              <div className="min-w-0">
+                <div className="font-medium">{run.taskType}</div>
+                <div className="break-all text-xs text-muted-foreground">{run.targetId}</div>
+                <p className="mt-1 break-words text-sm">
+                  {run.errorMessage ?? run.errorCode ?? "詳細なし"}
+                </p>
+              </div>
+              <ConfirmAction
+                description="このLLM runの対象だけを再実行キューに入れます。"
+                disabled={props.pending}
+                label="再実行"
+                pending={props.pending}
+                title="LLM runを再実行しますか？"
+                onConfirm={() => {
+                  props.onRetry(run.id);
+                }}
+              />
+            </div>
+          ))
+        )}
+        <ShowMore
+          shown={shown.length}
+          total={props.data.failedRuns.length}
+          onShowMore={props.onShowMore}
+        />
+      </div>
+    </SectionCard>
   );
+}
+
+function ReportGenerator(props: {
+  readonly period: { readonly periodStart: string; readonly periodEnd: string };
+  readonly onChange: (period: { readonly periodStart: string; readonly periodEnd: string }) => void;
+}) {
+  return (
+    <SectionCard
+      description="生成ボタンは画面右上にあります。直近完了週を初期値にしています。"
+      title="週次レポート生成期間"
+    >
+      <div className="grid gap-4 md:grid-cols-2">
+        <TextField
+          label="開始日"
+          type="date"
+          value={props.period.periodStart}
+          onChange={(value) => {
+            props.onChange({ ...props.period, periodStart: value });
+          }}
+        />
+        <TextField
+          label="終了日"
+          type="date"
+          value={props.period.periodEnd}
+          onChange={(value) => {
+            props.onChange({ ...props.period, periodEnd: value });
+          }}
+        />
+      </div>
+    </SectionCard>
+  );
+}
+
+function MessagesPanel(props: {
+  readonly filters: MessageFilters;
+  readonly items: DashboardData["messages"];
+  readonly limit: number;
+  readonly pending: boolean;
+  readonly onApplyFilters: () => void;
+  readonly onChangeFilters: (filters: MessageFilters) => void;
+  readonly onShowMore: () => void;
+}) {
+  const shown = itemLimit(props.items, props.limit);
+  return (
+    <SectionCard
+      action={<CountBadge shown={shown.length} total={props.items.length} />}
+      description="期間、チャンネル、ラベルで投稿を絞り込みます。"
+      title="投稿一覧"
+    >
+      <div className="mb-4 grid gap-3 lg:grid-cols-5">
+        <TextField
+          label="開始日"
+          type="date"
+          value={props.filters.periodStart}
+          onChange={(value) => {
+            props.onChangeFilters({ ...props.filters, periodStart: value });
+          }}
+        />
+        <TextField
+          label="終了日"
+          type="date"
+          value={props.filters.periodEnd}
+          onChange={(value) => {
+            props.onChangeFilters({ ...props.filters, periodEnd: value });
+          }}
+        />
+        <TextField
+          label="チャンネルID"
+          value={props.filters.channelId}
+          onChange={(value) => {
+            props.onChangeFilters({ ...props.filters, channelId: value });
+          }}
+        />
+        <SelectField
+          label="ラベル"
+          options={[
+            { value: "", label: "すべて" },
+            ...classificationLabels.map((label) => ({ value: label, label })),
+          ]}
+          value={props.filters.label}
+          onChange={(label) => {
+            props.onChangeFilters({ ...props.filters, label });
+          }}
+        />
+        <div className="flex items-end gap-2">
+          <Button className="w-full" disabled={props.pending} onClick={props.onApplyFilters}>
+            {props.pending ? <Loader2Icon className="animate-spin" /> : <SearchIcon />}
+            絞り込み
+          </Button>
+        </div>
+      </div>
+      <div className="grid gap-2">
+        {props.items.length === 0 ? (
+          <EmptyList description="条件に一致する投稿はありません。" title="投稿はありません" />
+        ) : (
+          shown.map((item) => (
+            <div className="rounded-lg border p-3" key={item.id}>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline">{item.channelName}</Badge>
+                <span className="text-xs text-muted-foreground">{item.postedAt}</span>
+              </div>
+              <p className="mt-2 break-words text-sm">{item.content}</p>
+              <div className="mt-2 break-all text-xs text-muted-foreground">
+                messageId: {item.messageId}
+              </div>
+            </div>
+          ))
+        )}
+        <ShowMore shown={shown.length} total={props.items.length} onShowMore={props.onShowMore} />
+      </div>
+    </SectionCard>
+  );
+}
+
+function ClassificationsPanel(props: {
+  readonly items: DashboardData["classifications"];
+  readonly limit: number;
+  readonly onShowMore: () => void;
+}) {
+  const shown = itemLimit(props.items, props.limit);
+  return (
+    <SectionCard
+      action={<CountBadge shown={shown.length} total={props.items.length} />}
+      description="LLM分類結果、重要度、要対応理由を確認します。"
+      title="分類結果一覧"
+    >
+      <div className="grid gap-2">
+        {props.items.length === 0 ? (
+          <EmptyList description="分類結果はまだありません。" title="分類結果はありません" />
+        ) : (
+          shown.map((item) => (
+            <div className="rounded-lg border p-3" key={item.id}>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={item.importance === "critical" ? "destructive" : "outline"}>
+                  重要度: {importanceLabels[item.importance]}
+                </Badge>
+                {item.adminActionNeeded ? (
+                  <Badge>要対応</Badge>
+                ) : (
+                  <Badge variant="secondary">対応不要</Badge>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  confidence {confidenceLabel(item.confidence)}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {item.labels.map((label) => (
+                  <Badge key={label} variant="secondary">
+                    {label}
+                  </Badge>
+                ))}
+              </div>
+              <p className="mt-2 text-sm font-medium">{item.suggestedSummary}</p>
+              <p className="mt-1 break-words text-sm text-muted-foreground">{item.reason}</p>
+              <div className="mt-2 break-all text-xs text-muted-foreground">
+                messageId: {item.messageId}
+              </div>
+            </div>
+          ))
+        )}
+        <ShowMore shown={shown.length} total={props.items.length} onShowMore={props.onShowMore} />
+      </div>
+    </SectionCard>
+  );
+}
+
+function NotificationsPanel(props: {
+  readonly items: DashboardData["notifications"];
+  readonly limit: number;
+  readonly pendingAction: ActionKey | null;
+  readonly feedbackDraft: (path: string) => FeedbackDraft;
+  readonly onDismiss: (id: string) => void;
+  readonly onFeedbackChange: (path: string, draft: FeedbackDraft) => void;
+  readonly onFeedbackSubmit: (path: string) => void;
+  readonly onShowMore: () => void;
+}) {
+  const shown = itemLimit(props.items, props.limit);
+  return (
+    <SectionCard
+      action={<CountBadge shown={shown.length} total={props.items.length} />}
+      description="運営者通知の状態確認、dismiss、フィードバックを行います。"
+      title="通知一覧"
+    >
+      <div className="grid gap-2">
+        {props.items.length === 0 ? (
+          <EmptyList description="通知はまだありません。" title="通知はありません" />
+        ) : (
+          shown.map((item) => {
+            const path = `/api/notifications/${item.id}/feedback`;
+            return (
+              <div className="grid gap-3 rounded-lg border p-3" key={item.id}>
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <div className="font-medium">{item.title}</div>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      <Badge variant={badgeVariantForStatus(item.status)}>
+                        {notificationStatusLabels[item.status]}
+                      </Badge>
+                      <Badge variant="outline">{item.importance}</Badge>
+                      <span className="break-all text-xs text-muted-foreground">
+                        {item.sentToChannelId} / {item.sentMessageId ?? "未送信"}
+                      </span>
+                    </div>
+                    <p className="mt-2 break-words text-sm text-muted-foreground">
+                      {item.failureReason ?? item.body}
+                    </p>
+                  </div>
+                  <ConfirmAction
+                    description="この通知を一覧上でdismissedにします。送信済みメッセージは削除しません。"
+                    disabled={props.pendingAction !== null || item.status === "dismissed"}
+                    label="非表示"
+                    pending={props.pendingAction === "notification-dismiss"}
+                    title="通知を非表示にしますか？"
+                    variant="outline"
+                    onConfirm={() => {
+                      props.onDismiss(item.id);
+                    }}
+                  />
+                </div>
+                <FeedbackForm
+                  disabled={props.pendingAction === "feedback"}
+                  draft={props.feedbackDraft(path)}
+                  onChange={(draft) => {
+                    props.onFeedbackChange(path, draft);
+                  }}
+                  onSubmit={() => {
+                    props.onFeedbackSubmit(path);
+                  }}
+                />
+              </div>
+            );
+          })
+        )}
+        <ShowMore shown={shown.length} total={props.items.length} onShowMore={props.onShowMore} />
+      </div>
+    </SectionCard>
+  );
+}
+
+function FaqPanel(props: {
+  readonly items: DashboardData["faqCandidates"];
+  readonly limit: number;
+  readonly drafts: Record<string, Pick<FaqCandidate, "draftAnswer" | "draftQuestion" | "topic">>;
+  readonly pendingAction: ActionKey | null;
+  readonly feedbackDraft: (path: string) => FeedbackDraft;
+  readonly onDraftChange: (
+    id: string,
+    draft: Pick<FaqCandidate, "draftAnswer" | "draftQuestion" | "topic">,
+  ) => void;
+  readonly onFeedbackChange: (path: string, draft: FeedbackDraft) => void;
+  readonly onFeedbackSubmit: (path: string) => void;
+  readonly onSave: (item: FaqCandidate) => void;
+  readonly onStatus: (item: FaqCandidate, status: FaqCandidateStatus) => void;
+  readonly onShowMore: () => void;
+}) {
+  const shown = itemLimit(props.items, props.limit);
+  return (
+    <SectionCard
+      action={<CountBadge shown={shown.length} total={props.items.length} />}
+      description="FAQ候補を編集し、採用、却下、要確認へ変更します。"
+      title="FAQ候補"
+    >
+      <div className="grid gap-3">
+        {props.items.length === 0 ? (
+          <EmptyList description="FAQ候補はまだありません。" title="FAQ候補はありません" />
+        ) : (
+          shown.map((item) => {
+            const draft = props.drafts[item.id] ?? {
+              topic: item.topic,
+              draftQuestion: item.draftQuestion,
+              draftAnswer: item.draftAnswer,
+            };
+            const path = `/api/faq-candidates/${item.id}/feedback`;
+            return (
+              <div className="grid gap-3 rounded-lg border p-3" key={item.id}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={badgeVariantForStatus(item.status)}>
+                    {faqStatusLabels[item.status]}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    confidence {confidenceLabel(item.confidence)}
+                  </span>
+                </div>
+                <TextField
+                  label="トピック"
+                  value={draft.topic}
+                  onChange={(topic) => {
+                    props.onDraftChange(item.id, { ...draft, topic });
+                  }}
+                />
+                <TextAreaField
+                  label="質問案"
+                  value={draft.draftQuestion}
+                  onChange={(draftQuestion) => {
+                    props.onDraftChange(item.id, { ...draft, draftQuestion });
+                  }}
+                />
+                <TextAreaField
+                  label="回答案"
+                  value={draft.draftAnswer}
+                  onChange={(draftAnswer) => {
+                    props.onDraftChange(item.id, { ...draft, draftAnswer });
+                  }}
+                />
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button
+                    disabled={props.pendingAction === "faq-save"}
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      props.onSave(item);
+                    }}
+                  >
+                    保存
+                  </Button>
+                  {faqCandidateStatuses
+                    .filter((status) => status !== "candidate")
+                    .map((status) => (
+                      <ConfirmAction
+                        description={`このFAQ候補を「${faqStatusLabels[status]}」に変更し、フィードバックも記録します。`}
+                        disabled={props.pendingAction !== null}
+                        key={status}
+                        label={faqStatusLabels[status]}
+                        pending={props.pendingAction === "faq-feedback"}
+                        title="FAQ候補の状態を変更しますか？"
+                        variant={status === "rejected" ? "destructive" : "outline"}
+                        onConfirm={() => {
+                          props.onStatus(item, status);
+                        }}
+                      />
+                    ))}
+                </div>
+                <FeedbackForm
+                  disabled={props.pendingAction === "feedback"}
+                  draft={props.feedbackDraft(path)}
+                  onChange={(nextDraft) => {
+                    props.onFeedbackChange(path, nextDraft);
+                  }}
+                  onSubmit={() => {
+                    props.onFeedbackSubmit(path);
+                  }}
+                />
+              </div>
+            );
+          })
+        )}
+        <ShowMore shown={shown.length} total={props.items.length} onShowMore={props.onShowMore} />
+      </div>
+    </SectionCard>
+  );
+}
+
+function AutoRepliesPanel(props: {
+  readonly items: DashboardData["autoReplies"];
+  readonly limit: number;
+  readonly pendingAction: ActionKey | null;
+  readonly feedbackDraft: (path: string) => FeedbackDraft;
+  readonly onApprove: (id: string) => void;
+  readonly onReject: (id: string) => void;
+  readonly onFeedbackChange: (path: string, draft: FeedbackDraft) => void;
+  readonly onFeedbackSubmit: (path: string) => void;
+  readonly onShowMore: () => void;
+}) {
+  const shown = itemLimit(props.items, props.limit);
+  return (
+    <SectionCard
+      action={<CountBadge shown={shown.length} total={props.items.length} />}
+      description="自動返信の承認、却下、品質フィードバックを行います。"
+      title="自動返信ログ"
+    >
+      <div className="grid gap-2">
+        {props.items.length === 0 ? (
+          <EmptyList
+            description="自動返信ログはまだありません。"
+            title="自動返信ログはありません"
+          />
+        ) : (
+          shown.map((item) => {
+            const path = `/api/auto-replies/${item.id}/feedback`;
+            return (
+              <div className="grid gap-3 rounded-lg border p-3" key={item.id}>
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline">{autoReplyCategoryLabels[item.replyCategory]}</Badge>
+                      <Badge variant={badgeVariantForStatus(item.status)}>
+                        {autoReplyStatusLabels[item.status]}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        confidence {confidenceLabel(item.confidence)} /{" "}
+                        {item.sentMessageId ?? "未送信"}
+                      </span>
+                    </div>
+                    <p className="mt-2 break-words text-sm">
+                      {item.body.length > 0 ? item.body : item.decisionReason}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <ConfirmAction
+                      description="この自動返信を承認し、送信キューへ投入します。"
+                      disabled={props.pendingAction !== null}
+                      label="承認"
+                      pending={props.pendingAction === "auto-reply-approve"}
+                      title="自動返信を承認しますか？"
+                      onConfirm={() => {
+                        props.onApprove(item.id);
+                      }}
+                    />
+                    <ConfirmAction
+                      description="この自動返信を却下し、送信しない状態にします。"
+                      disabled={props.pendingAction !== null}
+                      label="却下"
+                      pending={props.pendingAction === "auto-reply-reject"}
+                      title="自動返信を却下しますか？"
+                      variant="destructive"
+                      onConfirm={() => {
+                        props.onReject(item.id);
+                      }}
+                    />
+                  </div>
+                </div>
+                <FeedbackForm
+                  disabled={props.pendingAction === "feedback"}
+                  draft={props.feedbackDraft(path)}
+                  onChange={(draft) => {
+                    props.onFeedbackChange(path, draft);
+                  }}
+                  onSubmit={() => {
+                    props.onFeedbackSubmit(path);
+                  }}
+                />
+              </div>
+            );
+          })
+        )}
+        <ShowMore shown={shown.length} total={props.items.length} onShowMore={props.onShowMore} />
+      </div>
+    </SectionCard>
+  );
+}
+
+function WeeklyReportsPanel(props: {
+  readonly items: DashboardData["weeklyReports"];
+  readonly limit: number;
+  readonly feedbackDraft: (path: string) => FeedbackDraft;
+  readonly onFeedbackChange: (path: string, draft: FeedbackDraft) => void;
+  readonly onFeedbackSubmit: (path: string) => void;
+  readonly onShowMore: () => void;
+}) {
+  const shown = itemLimit(props.items, props.limit);
+  return (
+    <SectionCard
+      action={<CountBadge shown={shown.length} total={props.items.length} />}
+      description="週次レポートの短い版、メトリクス、詳細版を確認します。"
+      title="週次レポート"
+    >
+      <div className="grid gap-3">
+        {props.items.length === 0 ? (
+          <EmptyList
+            description="週次レポートはまだありません。"
+            title="週次レポートはありません"
+          />
+        ) : (
+          shown.map((item) => {
+            const path = `/api/reports/weekly/${item.id}/feedback`;
+            return (
+              <div className="grid gap-3 rounded-lg border p-3" key={item.id}>
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <div className="font-medium">
+                      {item.periodStart} - {item.periodEnd}
+                    </div>
+                    <Badge className="mt-2" variant={badgeVariantForStatus(item.status)}>
+                      {weeklyReportStatusLabels[item.status]}
+                    </Badge>
+                  </div>
+                  <FeedbackForm
+                    draft={props.feedbackDraft(path)}
+                    onChange={(draft) => {
+                      props.onFeedbackChange(path, draft);
+                    }}
+                    onSubmit={() => {
+                      props.onFeedbackSubmit(path);
+                    }}
+                  />
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <MetricCard label="投稿" value={item.messageCount} />
+                  <MetricCard label="未回答質問" value={item.metrics.unansweredQuestionCount} />
+                  <MetricCard label="不具合" value={item.metrics.bugReportCount} />
+                  <MetricCard label="不満" value={item.metrics.complaintCount} />
+                </div>
+                <pre className="max-h-80 overflow-auto rounded-lg bg-muted p-3 text-sm whitespace-pre-wrap">
+                  {item.shortBody}
+                </pre>
+                <details>
+                  <summary className="cursor-pointer text-sm font-medium">詳細版</summary>
+                  <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-muted p-3 text-sm whitespace-pre-wrap">
+                    {item.detailedBody}
+                  </pre>
+                </details>
+              </div>
+            );
+          })
+        )}
+        <ShowMore shown={shown.length} total={props.items.length} onShowMore={props.onShowMore} />
+      </div>
+    </SectionCard>
+  );
+}
+
+function DirtyBadge(props: { readonly dirty: boolean }) {
+  return props.dirty ? (
+    <Badge variant="secondary">未保存の変更あり</Badge>
+  ) : (
+    <Badge variant="outline">保存済み</Badge>
+  );
+}
+
+function ShowMore(props: {
+  readonly shown: number;
+  readonly total: number;
+  readonly onShowMore: () => void;
+}) {
+  if (props.shown >= props.total) return null;
+  return (
+    <Button className="mt-2 w-full" variant="outline" onClick={props.onShowMore}>
+      <ChevronsUpDownIcon />
+      続きを見る
+    </Button>
+  );
+}
+
+function autoReplyModeLabel(mode: string): string {
+  switch (mode) {
+    case "disabled":
+      return "無効";
+    case "intake_only":
+      return "受付のみ";
+    case "faq_assist":
+      return "FAQ補助";
+    case "approval_required":
+      return "承認必須";
+    default:
+      return mode;
+  }
 }

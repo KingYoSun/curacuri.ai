@@ -15,8 +15,10 @@ import { sampleLogPath } from "./workflow.js";
 import type { Phase1Repository } from "./repositories/types.js";
 import type {
   AdminFeedback,
+  AdminNotification,
   AutoReply,
   FeedbackKind,
+  FaqCandidate,
   FaqCandidateStatus,
   LlmTaskType,
 } from "../shared/types.js";
@@ -315,6 +317,22 @@ export async function recordFeedbackInRepository(
   return feedback;
 }
 
+export async function dismissNotificationInRepository(
+  repository: Phase1Repository,
+  notificationId: string,
+): Promise<AdminNotification> {
+  const notification = await repository.getNotification(notificationId);
+  if (notification === null) {
+    throw new Error(`notification not found: ${notificationId}`);
+  }
+  await repository.dismissNotification(notificationId);
+  return {
+    ...notification,
+    status: "dismissed",
+    failureReason: null,
+  };
+}
+
 export async function updateFaqCandidateStatusInRepository(
   repository: Phase1Repository,
   candidateId: string,
@@ -325,4 +343,20 @@ export async function updateFaqCandidateStatusInRepository(
     throw new Error(`FAQ candidate not found: ${candidateId}`);
   }
   await repository.updateFaqCandidateStatus(candidateId, status);
+}
+
+export async function updateFaqCandidateInRepository(
+  repository: Phase1Repository,
+  candidateId: string,
+  patch: Partial<Pick<FaqCandidate, "topic" | "draftQuestion" | "draftAnswer" | "status">>,
+): Promise<FaqCandidate> {
+  const candidate = await repository.getFaqCandidate(candidateId);
+  if (candidate === null) {
+    throw new Error(`FAQ candidate not found: ${candidateId}`);
+  }
+  return repository.updateFaqCandidate({
+    ...candidate,
+    ...patch,
+    updatedAt: nowIso(),
+  });
 }

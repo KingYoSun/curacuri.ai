@@ -4,11 +4,13 @@ import { nowIso } from "../app/ids.js";
 import { readLlmConfigFromEnv } from "../app/llm/client.js";
 import {
   approveAutoReplyInRepository,
+  dismissNotificationInRepository,
   enqueueReprocess,
   enqueueRetryRun,
   enqueueSampleLog,
   recordFeedbackInRepository,
   rejectAutoReplyInRepository,
+  updateFaqCandidateInRepository,
   updateFaqCandidateStatusInRepository,
 } from "../app/persistent-workflow.js";
 import type { AppRuntime } from "../app/runtime.js";
@@ -18,6 +20,7 @@ import {
   autoReplyModes,
   classificationLabels,
   feedbackKinds,
+  faqCandidateStatuses,
   llmRunStatuses,
   llmTaskTypes,
   type AutoReplyCategory,
@@ -73,6 +76,13 @@ function feedbackKind(value: unknown): FeedbackKind {
     return value as FeedbackKind;
   }
   return "useful";
+}
+
+function faqCandidateStatusValue(value: unknown): FaqCandidateStatus | undefined {
+  if (typeof value === "string" && faqCandidateStatuses.includes(value as FaqCandidateStatus)) {
+    return value as FaqCandidateStatus;
+  }
+  return undefined;
 }
 
 function modeValue(value: unknown, fallback: AutoReplyMode): AutoReplyMode {
@@ -279,14 +289,50 @@ export function createApiApp(runtime: AppRuntime) {
     );
   });
 
+  app.post("/api/notifications/:id/dismiss", async (context) => {
+    try {
+      return context.json(
+        await dismissNotificationInRepository(runtime.repository, context.req.param("id")),
+      );
+    } catch (error) {
+      return context.json(
+        { error: error instanceof Error ? error.message : "notification not found" },
+        404,
+      );
+    }
+  });
+
   app.get("/api/faq-candidates", async (context) =>
     context.json(await runtime.repository.listFaqCandidates()),
   );
 
+  app.patch("/api/faq-candidates/:id", async (context) => {
+    const body = await requestBody(context.req.raw);
+    const status = body.status === undefined ? undefined : faqCandidateStatusValue(body.status);
+    if (body.status !== undefined && status === undefined) {
+      return context.json({ error: "invalid FAQ candidate status" }, 400);
+    }
+    try {
+      return context.json(
+        await updateFaqCandidateInRepository(runtime.repository, context.req.param("id"), {
+          ...(typeof body.topic === "string" ? { topic: body.topic } : {}),
+          ...(typeof body.draftQuestion === "string" ? { draftQuestion: body.draftQuestion } : {}),
+          ...(typeof body.draftAnswer === "string" ? { draftAnswer: body.draftAnswer } : {}),
+          ...(status === undefined ? {} : { status }),
+        }),
+      );
+    } catch (error) {
+      return context.json(
+        { error: error instanceof Error ? error.message : "FAQ candidate not found" },
+        404,
+      );
+    }
+  });
+
   app.post("/api/faq-candidates/:id/feedback", async (context) => {
     const body = await requestBody(context.req.raw);
-    const status = stringValue(body.status, "candidate") as FaqCandidateStatus;
-    if (["candidate", "accepted", "rejected", "needs_review"].includes(status)) {
+    const status = faqCandidateStatusValue(body.status);
+    if (status !== undefined) {
       await updateFaqCandidateStatusInRepository(
         runtime.repository,
         context.req.param("id"),

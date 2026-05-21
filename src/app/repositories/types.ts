@@ -41,6 +41,7 @@ export type Phase1Repository = {
   saveNotification(notification: AdminNotification): Promise<void>;
   markNotificationSent(id: string, sentMessageId: string): Promise<void>;
   markNotificationFailed(id: string, reason: string): Promise<void>;
+  dismissNotification(id: string): Promise<void>;
   listAutoReplies(): Promise<readonly AutoReply[]>;
   getAutoReply(id: string): Promise<AutoReply | null>;
   saveAutoReply(autoReply: AutoReply): Promise<void>;
@@ -48,6 +49,7 @@ export type Phase1Repository = {
   listFaqCandidates(): Promise<readonly FaqCandidate[]>;
   getFaqCandidate(id: string): Promise<FaqCandidate | null>;
   updateFaqCandidateStatus(id: string, status: FaqCandidate["status"]): Promise<void>;
+  updateFaqCandidate(candidate: FaqCandidate): Promise<FaqCandidate>;
   listWeeklyReports(): Promise<readonly WeeklyReport[]>;
   getWeeklyReport(id: string): Promise<WeeklyReport | null>;
   listLlmRuns(status?: LlmGenerationRun["status"]): Promise<readonly LlmGenerationRun[]>;

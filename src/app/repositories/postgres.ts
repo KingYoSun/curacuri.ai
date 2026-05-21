@@ -611,6 +611,13 @@ export class PostgresPhase1Repository implements Phase1Repository {
     );
   }
 
+  async dismissNotification(id: string): Promise<void> {
+    await this.#pool.query(
+      "UPDATE admin_notifications SET status='dismissed', failure_reason=NULL WHERE id=$1",
+      [id],
+    );
+  }
+
   async listAutoReplies(): Promise<readonly AutoReply[]> {
     const result = await this.#pool.query("SELECT * FROM auto_replies ORDER BY created_at DESC");
     return rows(result).map(mapAutoReply);
@@ -673,6 +680,11 @@ export class PostgresPhase1Repository implements Phase1Repository {
       status,
       nowIso(),
     ]);
+  }
+
+  async updateFaqCandidate(item: FaqCandidate): Promise<FaqCandidate> {
+    await this.saveFaqCandidate(item);
+    return item;
   }
 
   async replaceFaqCandidates(items: readonly FaqCandidate[]): Promise<void> {
