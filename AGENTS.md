@@ -5,6 +5,7 @@
 ## 最初に読む場所
 
 - プロダクト文脈: `proposal.md`
+- UI設計原則: `DESIGN.md`
 - ハーネス運用: `docs/harness.md`
 - アーキテクチャ判断: `docs/adr/`
 
