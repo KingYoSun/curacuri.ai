@@ -71,12 +71,18 @@ jobの可視化、E2Eに近い確認に移っている。
 - 現状の repository から `Phase1State`
   を組み立てて保存し直す adapter 方式は、内部改善対象として残す。
 
-### deleted / retention 対象データの除外を完全化
+### deleted / retention 対象データの除外を完全化（完了）
 
-- `messages.deleted_at`
-  は概ね除外されるが、週報metricsやclassification集計が削除済みmessageに紐づくclassificationを拾う余地がある。
-- `retention_days` 処理は分類job後に走るだけで、定期jobまたは明示jobとしては未整備。
-- 分類、FAQ候補、週報、metrics の全経路で削除済み投稿を除外する。
+2026-05-21 に実装済み。
+
+- `active-data` helper を追加し、active message に紐づく classification、FAQ候補、auto
+  replyだけを生成入力とmetricsに使う。
+- `message.classify`、`auto_reply.decide`、`faq.generate`、`report.weekly` の処理開始前に
+  `retention_days` による論理削除を実行する。
+- `messages.deleted_at IS NOT NULL` の投稿は、分類、FAQ候補、週報、metricsの全経路から除外する。
+- `/api/messages`、`/api/faq-candidates`、`/api/reports/weekly` 生成受付でも retention
+  sweep を実行する。
+- 専用queue、API、DB schema、ADRは追加しない。
 
 ### 管理者通知の重複送信対策
 
@@ -186,7 +192,6 @@ jobの可視化、E2Eに近い確認に移っている。
 
 ## 補足
 
-Phase 1 の残タスクとして漏れていた大きな項目は、LLM生成関数の分解、deleted /
-retention 除外の完全化、FAQ / report
+Phase 1 の残タスクとして漏れていた大きな項目は、LLM生成関数の分解、FAQ / report
 payload の実利用である。これらは表面機能だけを見ると見落としやすいが、Dogfood
 Alpha を継続運用するための内部品質として扱う。

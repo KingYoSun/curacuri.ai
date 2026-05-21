@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import { activeWorkflowData } from "./active-data.js";
 import { normalizeDiscordEvent, normalizeSampleRecord, parseSampleJsonl } from "./intake.js";
 import { matchAutoReplyEscalationRule } from "./auto-reply-rules.js";
 import { newId, nowIso } from "./ids.js";
@@ -56,6 +57,11 @@ function saveLlmRun(runMap: Map<string, LlmGenerationRun>, run: LlmGenerationRun
   }
 }
 
+export async function sweepExpiredMessages(repository: Phase1Repository): Promise<number> {
+  const settings = await repository.getSettings();
+  return repository.logicalDeleteExpiredMessages(settings.retentionDays);
+}
+
 export async function enqueueSampleLog(
   repository: Phase1Repository,
   queues: QueuePublisher,
@@ -97,6 +103,7 @@ export async function handleMessageClassify(
   context: RepositoryWorkflow,
   payload: MessageClassifyPayload,
 ): Promise<void> {
+  await sweepExpiredMessages(context.repository);
   const state = await context.repository.loadState();
   const message = state.messages.get(payload.messageId);
   if (message?.deletedAt !== null) {
@@ -132,7 +139,6 @@ export async function handleMessageClassify(
       await context.queues.add("ops.notify", job);
     }
   }
-  await context.repository.logicalDeleteExpiredMessages(state.settings.retentionDays);
 }
 
 function normalizePendingSend(reply: AutoReply): AutoReply {
@@ -158,17 +164,23 @@ export async function handleAutoReplyDecide(
   context: RepositoryWorkflow,
   payload: AutoReplyDecidePayload,
 ): Promise<void> {
+  await sweepExpiredMessages(context.repository);
   const state = await context.repository.loadState();
   const message = state.messages.get(payload.messageId);
   const classification = state.classifications.get(payload.classificationId);
-  if (message === undefined || classification === undefined || message.deletedAt !== null) {
+  if (
+    message === undefined ||
+    classification === undefined ||
+    message.deletedAt !== null ||
+    classification.messageId !== message.id
+  ) {
     return;
   }
   const autoReplyResult = await generateAutoReplyWithLlm(
     message,
     classification,
     state.autoReplyPolicy,
-    [...state.faqCandidates.values()],
+    activeWorkflowData(state).faqCandidates,
     clientOrDefault(context.llmClient),
   );
   saveLlmRun(state.llmGenerationRuns, autoReplyResult.run);
@@ -212,15 +224,12 @@ export async function handleFaqGenerate(
   _payload: FaqGeneratePayload = {},
 ): Promise<void> {
   void _payload;
+  await sweepExpiredMessages(context.repository);
   const state = await context.repository.loadState();
-  for (const [id, message] of state.messages) {
-    if (message.deletedAt !== null) {
-      state.messages.delete(id);
-    }
-  }
+  const active = activeWorkflowData(state);
   const { candidates, run } = await generateFaqCandidatesWithLlm(
-    [...state.messages.values()],
-    [...state.classifications.values()],
+    active.messages,
+    active.classifications,
     clientOrDefault(context.llmClient),
   );
   saveLlmRun(state.llmGenerationRuns, run);
@@ -237,21 +246,32 @@ export async function handleReportWeekly(
   context: RepositoryWorkflow,
   payload: ReportWeeklyPayload,
 ): Promise<void> {
-  await handleFaqGenerate(context, {
-    periodStart: payload.periodStart,
-    periodEnd: payload.periodEnd,
-  });
+  await sweepExpiredMessages(context.repository);
   const state = await context.repository.loadState();
+  const activeBeforeFaq = activeWorkflowData(state);
+  const faqGeneration = await generateFaqCandidatesWithLlm(
+    activeBeforeFaq.messages,
+    activeBeforeFaq.classifications,
+    clientOrDefault(context.llmClient),
+  );
+  saveLlmRun(state.llmGenerationRuns, faqGeneration.run);
+  if (faqGeneration.candidates !== null) {
+    state.faqCandidates.clear();
+    for (const candidate of faqGeneration.candidates) {
+      state.faqCandidates.set(candidate.id, candidate);
+    }
+  }
+  const active = activeWorkflowData(state);
   const metrics = buildWeeklyReportMetrics(
-    [...state.classifications.values()],
-    [...state.faqCandidates.values()],
-    [...state.autoReplies.values()],
+    active.classifications,
+    active.faqCandidates,
+    active.autoReplies,
   );
   const { report, run } = await generateWeeklyReportWithLlm(clientOrDefault(context.llmClient), {
     settings: state.settings,
-    messages: [...state.messages.values()],
-    classifications: [...state.classifications.values()],
-    faqCandidates: [...state.faqCandidates.values()],
+    messages: active.messages,
+    classifications: active.classifications,
+    faqCandidates: active.faqCandidates,
     periodStart: payload.periodStart,
     periodEnd: payload.periodEnd,
     metrics,

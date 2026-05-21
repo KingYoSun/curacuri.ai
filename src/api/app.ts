@@ -10,6 +10,7 @@ import {
   enqueueSampleLog,
   recordFeedbackInRepository,
   rejectAutoReplyInRepository,
+  sweepExpiredMessages,
   updateFaqCandidateInRepository,
   updateFaqCandidateStatusInRepository,
 } from "../app/persistent-workflow.js";
@@ -373,6 +374,7 @@ export function createApiApp(runtime: AppRuntime) {
   );
 
   app.get("/api/messages", async (context) => {
+    await sweepExpiredMessages(runtime.repository);
     const periodStart = context.req.query("periodStart");
     const periodEnd = context.req.query("periodEnd");
     const channelId = context.req.query("channelId");
@@ -420,9 +422,10 @@ export function createApiApp(runtime: AppRuntime) {
     }
   });
 
-  app.get("/api/faq-candidates", async (context) =>
-    context.json(await runtime.repository.listFaqCandidates()),
-  );
+  app.get("/api/faq-candidates", async (context) => {
+    await sweepExpiredMessages(runtime.repository);
+    return context.json(await runtime.repository.listFaqCandidates());
+  });
 
   app.patch("/api/faq-candidates/:id", async (context) => {
     const body = await requestBody(context.req.raw);
@@ -480,6 +483,7 @@ export function createApiApp(runtime: AppRuntime) {
 
   app.post("/api/reports/weekly", async (context) => {
     const body = await requestBody(context.req.raw);
+    await sweepExpiredMessages(runtime.repository);
     const settings = await runtime.repository.getSettings();
     const payload: ReportWeeklyPayload = {
       periodStart: stringValue(body.periodStart, "2026-01-01"),

@@ -10,9 +10,71 @@ import {
   reprocessLlmTask,
   retryLlmRun,
 } from "../../src/app/workflow.js";
+import type {
+  AutoReply,
+  Classification,
+  FaqCandidate,
+  Message,
+  WeeklyReportMetrics,
+} from "../../src/shared/types.js";
 import { FakeLlmClient } from "./fake-llm.js";
 
 describe("LLM workflow", () => {
+  function classificationFor(
+    message: Message,
+    fields: Partial<Classification> = {},
+  ): Classification {
+    return {
+      id: `classification-${message.id}`,
+      messageId: message.id,
+      labels: ["質問"],
+      importance: "medium",
+      adminActionNeeded: false,
+      adminActionType: "weekly_report",
+      confidence: 0.91,
+      reason: "使い方を確認している投稿のため。",
+      suggestedSummary: "使い方に関する質問。",
+      modelName: "test",
+      rawOutput: {},
+      createdAt: "2026-05-21T00:00:00.000Z",
+      ...fields,
+    };
+  }
+
+  function autoReplyFor(message: Message, classification: Classification): AutoReply {
+    return {
+      id: `auto-reply-${message.id}`,
+      messageId: message.id,
+      classificationId: classification.id,
+      mode: "intake_only",
+      replyCategory: "intake",
+      body: "受け付けました。",
+      sourceRefs: [],
+      confidence: 0.91,
+      decisionReason: "受付返信として安全な範囲のため。",
+      status: "sent",
+      sentMessageId: `sent-${message.id}`,
+      approvedBy: null,
+      sentAt: "2026-05-21T00:00:00.000Z",
+      createdAt: "2026-05-21T00:00:00.000Z",
+    };
+  }
+
+  function faqCandidateFor(message: Message): FaqCandidate {
+    return {
+      id: `faq-${message.id}`,
+      sourceMessageIds: [message.id],
+      topic: "使い方の確認",
+      currentAnswerStatus: "existing_faq_possible",
+      draftQuestion: "基本的な使い方はどこで確認できますか？",
+      draftAnswer: "この回答文案は公式回答ではありません。",
+      confidence: 0.82,
+      status: "candidate",
+      createdAt: "2026-05-21T00:00:00.000Z",
+      updatedAt: "2026-05-21T00:00:00.000Z",
+    };
+  }
+
   it("records a failed run when LLM config is missing", async () => {
     const state = createPhase1State();
     const message = normalizeSampleRecord(
@@ -80,6 +142,140 @@ describe("LLM workflow", () => {
       taskType: "classification",
       status: "failed",
     });
+  });
+
+  it("does not classify deleted messages in direct or reprocess flows", async () => {
+    const state = createPhase1State();
+    const activeMessage = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    const deletedMessage = {
+      ...normalizeSampleRecord(
+        {
+          text: "削除済みのWebhook通知質問です。",
+          channel_context: "#support / 使い方質問",
+        },
+        1,
+      ),
+      deletedAt: "2026-05-21T00:00:00.000Z",
+    };
+    state.messages.set(activeMessage.id, activeMessage);
+    state.messages.set(deletedMessage.id, deletedMessage);
+
+    await processMessage(state, deletedMessage, new FakeLlmClient());
+    await reprocessLlmTask(state, "classification", new FakeLlmClient());
+
+    expect(
+      [...state.classifications.values()].map((classification) => classification.messageId),
+    ).toEqual([activeMessage.id]);
+  });
+
+  it("does not send deleted message classifications to FAQ generation", async () => {
+    const state = createPhase1State();
+    const activeMessage = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    const deletedMessage = {
+      ...normalizeSampleRecord(
+        {
+          text: "削除済みのFAQ候補質問です。",
+          channel_context: "#support / 使い方質問",
+        },
+        1,
+      ),
+      deletedAt: "2026-05-21T00:00:00.000Z",
+    };
+    state.messages.set(activeMessage.id, activeMessage);
+    state.messages.set(deletedMessage.id, deletedMessage);
+    state.classifications.set("active-classification", classificationFor(activeMessage));
+    state.classifications.set("deleted-classification", classificationFor(deletedMessage));
+
+    await refreshFaqCandidates(
+      state,
+      new FakeLlmClient({
+        overrides: {
+          faq_candidates: {
+            candidates: [
+              {
+                source_message_ids: [activeMessage.id],
+                topic: "Webhook設定",
+                current_answer_status: "existing_faq_possible",
+                draft_question: "Webhook設定はどこで確認できますか？",
+                draft_answer: "この回答文案は公式回答ではありません。",
+                confidence: 0.82,
+                status: "candidate",
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect([...state.faqCandidates.values()]).toEqual([
+      expect.objectContaining({ sourceMessageIds: [activeMessage.id] }),
+    ]);
+  });
+
+  it("excludes deleted message derived data from weekly report metrics", async () => {
+    const state = createPhase1State();
+    const activeMessage = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    const deletedMessage = {
+      ...normalizeSampleRecord(
+        {
+          text: "削除済みの不具合報告です。",
+          channel_context: "#support / 不具合報告",
+        },
+        1,
+      ),
+      deletedAt: "2026-05-21T00:00:00.000Z",
+    };
+    const activeClassification = classificationFor(activeMessage, {
+      id: "active-classification",
+      labels: ["未回答質問"],
+    });
+    const deletedClassification = classificationFor(deletedMessage, {
+      id: "deleted-classification",
+      labels: ["バグ報告"],
+    });
+    state.messages.set(activeMessage.id, activeMessage);
+    state.messages.set(deletedMessage.id, deletedMessage);
+    state.classifications.set(activeClassification.id, activeClassification);
+    state.classifications.set(deletedClassification.id, deletedClassification);
+    state.autoReplies.set("active-reply", autoReplyFor(activeMessage, activeClassification));
+    state.autoReplies.set("deleted-reply", autoReplyFor(deletedMessage, deletedClassification));
+    state.faqCandidates.set("active-faq", faqCandidateFor(activeMessage));
+    state.faqCandidates.set("deleted-faq", faqCandidateFor(deletedMessage));
+
+    const report = await generateWeeklyReport(
+      state,
+      "2026-01-01",
+      "2026-01-07",
+      new FakeLlmClient({ failures: ["faq_candidates"] }),
+    );
+
+    expect(report?.metrics).toEqual({
+      unansweredQuestionCount: 1,
+      bugReportCount: 0,
+      featureRequestCount: 0,
+      complaintCount: 0,
+      faqCandidateCount: 1,
+      autoReplySentCount: 1,
+      autoReplyEscalatedCount: 0,
+    } satisfies WeeklyReportMetrics);
   });
 
   it("blocks high-risk auto replies even when LLM would send", async () => {

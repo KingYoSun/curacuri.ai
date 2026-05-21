@@ -146,7 +146,7 @@ function createDashboardRuntime(seed: {
       return Promise.resolve();
     },
     logicalDeleteExpiredMessages() {
-      return unsupportedPromise();
+      return Promise.resolve(0);
     },
   };
 

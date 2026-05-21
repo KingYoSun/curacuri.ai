@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import { activeWorkflowData } from "./active-data.js";
 import { matchAutoReplyEscalationRule } from "./auto-reply-rules.js";
 import { normalizeSampleRecord, parseSampleJsonl } from "./intake.js";
 import { createDefaultLlmClient, readLlmConfigFromEnv, type LlmClient } from "./llm/client.js";
@@ -89,6 +90,9 @@ export async function processMessage(
   message: Message,
   client: LlmClient = createDefaultLlmClient(),
 ): Promise<void> {
+  if (message.deletedAt !== null) {
+    return;
+  }
   const classificationResult = await generateClassificationWithLlm(message, client);
   saveLlmRun(state, classificationResult.run);
   const { classification } = classificationResult;
@@ -106,7 +110,7 @@ export async function processMessage(
     message,
     classification,
     state.autoReplyPolicy,
-    [...state.faqCandidates.values()],
+    activeWorkflowData(state).faqCandidates,
     client,
   );
   saveLlmRun(state, run);
@@ -167,9 +171,10 @@ export async function refreshFaqCandidates(
   state: Phase1State,
   client: LlmClient = createDefaultLlmClient(),
 ): Promise<void> {
+  const active = activeWorkflowData(state);
   const { candidates, run } = await generateFaqCandidatesWithLlm(
-    [...state.messages.values()],
-    [...state.classifications.values()],
+    active.messages,
+    active.classifications,
     client,
   );
   saveLlmRun(state, run);
@@ -188,16 +193,17 @@ export async function generateWeeklyReport(
   client: LlmClient = createDefaultLlmClient(),
 ): Promise<WeeklyReport | null> {
   await refreshFaqCandidates(state, client);
+  const active = activeWorkflowData(state);
   const metrics = buildWeeklyReportMetrics(
-    [...state.classifications.values()],
-    [...state.faqCandidates.values()],
-    [...state.autoReplies.values()],
+    active.classifications,
+    active.faqCandidates,
+    active.autoReplies,
   );
   const { report, run } = await generateWeeklyReportWithLlm(client, {
     settings: state.settings,
-    messages: [...state.messages.values()],
-    classifications: [...state.classifications.values()],
-    faqCandidates: [...state.faqCandidates.values()],
+    messages: active.messages,
+    classifications: active.classifications,
+    faqCandidates: active.faqCandidates,
     periodStart,
     periodEnd,
     metrics,
@@ -238,8 +244,8 @@ export async function reprocessLlmTask(
   if (scope === "all" || scope === "classification") {
     const messages =
       targetId === undefined
-        ? [...state.messages.values()]
-        : [...state.messages.values()].filter((message) => message.id === targetId);
+        ? activeWorkflowData(state).messages
+        : activeWorkflowData(state).messages.filter((message) => message.id === targetId);
     if (targetId === undefined) {
       state.classifications.clear();
       state.notifications.clear();
@@ -259,8 +265,8 @@ export async function reprocessLlmTask(
     );
     const messages =
       targetId === undefined
-        ? [...state.messages.values()]
-        : [...state.messages.values()].filter((message) => message.id === targetId);
+        ? activeWorkflowData(state).messages
+        : activeWorkflowData(state).messages.filter((message) => message.id === targetId);
     if (targetId === undefined) {
       state.autoReplies.clear();
     }
@@ -271,7 +277,7 @@ export async function reprocessLlmTask(
           message,
           classification,
           state.autoReplyPolicy,
-          [...state.faqCandidates.values()],
+          activeWorkflowData(state).faqCandidates,
           client,
         );
         saveLlmRun(state, run);
