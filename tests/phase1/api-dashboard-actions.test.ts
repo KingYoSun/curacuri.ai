@@ -48,6 +48,14 @@ function createDashboardRuntime(seed: {
       state.autoReplyPolicy = policy;
       return Promise.resolve(policy);
     },
+    listEscalationRules() {
+      return Promise.resolve(state.autoReplyPolicy.escalationRules);
+    },
+    replaceEscalationRules(_guildId, rules) {
+      state.autoReplyPolicy = { ...state.autoReplyPolicy, escalationRules: rules };
+      state.settings = { ...state.settings, autoReplyEscalationRules: rules };
+      return Promise.resolve(rules);
+    },
     upsertMessage() {
       return unsupportedPromise();
     },

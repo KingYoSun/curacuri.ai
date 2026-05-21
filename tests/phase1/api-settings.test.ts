@@ -40,6 +40,14 @@ function createSettingsRuntime(): AppRuntime {
       state.autoReplyPolicy = policy;
       return Promise.resolve(state.autoReplyPolicy);
     },
+    listEscalationRules() {
+      return Promise.resolve(state.autoReplyPolicy.escalationRules);
+    },
+    replaceEscalationRules(_guildId, rules) {
+      state.autoReplyPolicy = { ...state.autoReplyPolicy, escalationRules: rules };
+      state.settings = { ...state.settings, autoReplyEscalationRules: rules };
+      return Promise.resolve(rules);
+    },
     upsertMessage() {
       return unsupportedPromise();
     },
@@ -193,5 +201,72 @@ describe("settings API", () => {
     const settings = (await settingsResponse.json()) as { readonly autoReplyMode: string };
 
     expect(settings.autoReplyMode).toBe("disabled");
+  });
+
+  it("round-trips auto reply escalation rules through policy and settings APIs", async () => {
+    const app = createApiApp(createSettingsRuntime());
+    const updateResponse = await app.request("/api/auto-reply/policy", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        mode: "intake_only",
+        escalationRules: [
+          {
+            ruleType: "keyword",
+            action: "notify_admin",
+            enabled: true,
+            condition: { keywords: ["社外秘"] },
+          },
+        ],
+      }),
+    });
+    expect(updateResponse.ok).toBe(true);
+
+    const policyResponse = await app.request("/api/auto-reply/policy");
+    const policy = (await policyResponse.json()) as {
+      readonly escalationRules: readonly {
+        readonly id: string;
+        readonly ruleType: string;
+        readonly action: string;
+        readonly condition: { readonly keywords?: readonly string[] };
+      }[];
+    };
+    expect(policy.escalationRules).toHaveLength(1);
+    expect(typeof policy.escalationRules[0]?.id).toBe("string");
+    expect(policy.escalationRules[0]).toMatchObject({
+      ruleType: "keyword",
+      action: "notify_admin",
+      condition: { keywords: ["社外秘"] },
+    });
+
+    const settingsResponse = await app.request("/api/settings");
+    const settings = (await settingsResponse.json()) as {
+      readonly autoReplyEscalationRules: readonly unknown[];
+    };
+    expect(settings.autoReplyEscalationRules).toHaveLength(1);
+  });
+
+  it("rejects invalid auto reply escalation rule conditions", async () => {
+    const app = createApiApp(createSettingsRuntime());
+    const response = await app.request("/api/auto-reply/policy", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        escalationRules: [
+          {
+            ruleType: "confidence",
+            action: "do_not_reply",
+            enabled: true,
+            condition: { maxConfidence: 2 },
+          },
+        ],
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: "maxConfidence must be a number between 0 and 1",
+    });
   });
 });

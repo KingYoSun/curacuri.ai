@@ -74,3 +74,32 @@ export function createAdminNotification(
     createdAt: nowIso(),
   };
 }
+
+export function createAutoReplyEscalationNotification(
+  message: Message,
+  classification: Classification,
+  settings: GuildSettings,
+  reason: string,
+): AdminNotification {
+  const notificationType = notificationTypeFor(classification);
+  const importance = classification.importance === "critical" ? "critical" : "high";
+  return {
+    id: newId(),
+    notificationType,
+    messageIds: [message.id],
+    title: `自動返信エスカレーション: ${classification.labels.join(" / ")}`,
+    body: [
+      "自動返信ルールにより運営確認へ回した投稿です。",
+      `チャンネル: ${message.channelName}`,
+      `要点: ${classification.suggestedSummary}`,
+      `理由: ${reason}`,
+    ].join("\n"),
+    importance,
+    status: "pending",
+    sentToChannelId: settings.adminNotificationChannelId,
+    sentMessageId: null,
+    sentAt: null,
+    failureReason: null,
+    createdAt: nowIso(),
+  };
+}

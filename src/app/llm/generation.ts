@@ -1,4 +1,9 @@
 import { buildClassification } from "../../shared/validation.js";
+import {
+  fixedEscalationLabels,
+  matchAutoReplyEscalationRule,
+  sensitiveAutoReplyKeywords,
+} from "../auto-reply-rules.js";
 import { newId, nowIso } from "../ids.js";
 import type { Phase1State } from "../store.js";
 import {
@@ -25,22 +30,6 @@ import {
   parseLlmFaqCandidatesOutput,
   parseLlmWeeklyReportOutput,
 } from "./validation.js";
-
-const escalationLabels = ["公式回答待ち", "炎上兆候", "誤情報可能性", "ルール違反候補"] as const;
-
-const escalationKeywords = [
-  "法務",
-  "広報",
-  "料金",
-  "障害",
-  "ロードマップ",
-  "アカウント",
-  "課金",
-  "セキュリティ",
-  "APIキー",
-  "トークン",
-  "個人情報",
-] as const;
 
 function hasAllowedLabel(
   policy: GuildSettings["autoReplyAllowedLabels"],
@@ -102,10 +91,10 @@ function preEscalationReason(
   if (classification.confidence < policy.minConfidence) {
     return "confidenceが自動返信の閾値未満です。";
   }
-  if (escalationLabels.some((label) => classification.labels.includes(label))) {
+  if (fixedEscalationLabels.some((label) => classification.labels.includes(label))) {
     return "公式確認または運営確認が必要なラベルです。";
   }
-  if (escalationKeywords.some((keyword) => message.content.includes(keyword))) {
+  if (sensitiveAutoReplyKeywords.some((keyword) => message.content.includes(keyword))) {
     return "安全に自動回答できない話題を含みます。";
   }
   if (policy.mode === "faq_assist" && policy.requireSourceForFaq && sourceRefs.length === 0) {
@@ -200,6 +189,23 @@ export async function generateAutoReplyWithLlm(
     return blockedAutoReply(message, classification, state, preReason, sourceRefs);
   }
 
+  const preMatchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
+    message,
+    classification,
+  });
+  if (preMatchedRule?.rule.action === "do_not_reply") {
+    return {
+      ...blockedAutoReply(message, classification, state, preMatchedRule.reason, sourceRefs),
+      status: "blocked",
+    };
+  }
+  if (preMatchedRule?.rule.action === "notify_admin") {
+    return {
+      ...blockedAutoReply(message, classification, state, preMatchedRule.reason, sourceRefs),
+      status: "escalated",
+    };
+  }
+
   const run = startLlmRun(state, "auto_reply", message.id, client.modelName);
   try {
     const result = await client.generateJson({
@@ -238,8 +244,31 @@ export async function generateAutoReplyWithLlm(
       };
     }
 
+    const matchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
+      message,
+      classification,
+      category,
+    });
+    if (matchedRule?.rule.action === "do_not_reply") {
+      return {
+        ...blockedAutoReply(message, classification, state, matchedRule.reason, sourceRefs),
+        replyCategory: category,
+        status: "blocked",
+      };
+    }
+    if (matchedRule?.rule.action === "notify_admin") {
+      return {
+        ...blockedAutoReply(message, classification, state, matchedRule.reason, sourceRefs),
+        replyCategory: category,
+        status: "escalated",
+      };
+    }
+
     const shouldHoldForApproval =
-      state.autoReplyPolicy.mode === "approval_required" || output.decision === "pending_approval";
+      state.autoReplyPolicy.mode === "approval_required" ||
+      output.decision === "pending_approval" ||
+      preMatchedRule?.rule.action === "draft_for_approval" ||
+      matchedRule?.rule.action === "draft_for_approval";
     const createdAt = nowIso();
     return {
       id: newId(),
@@ -250,7 +279,12 @@ export async function generateAutoReplyWithLlm(
       body: output.body,
       sourceRefs,
       confidence: output.confidence,
-      decisionReason: output.reason,
+      decisionReason:
+        preMatchedRule?.rule.action === "draft_for_approval"
+          ? preMatchedRule.reason
+          : matchedRule?.rule.action === "draft_for_approval"
+            ? matchedRule.reason
+            : output.reason,
       status: shouldHoldForApproval ? "pending_approval" : "sent",
       sentMessageId: shouldHoldForApproval ? null : newId(),
       approvedBy: null,

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 
-import { nowIso } from "../app/ids.js";
+import { newId, nowIso } from "../app/ids.js";
 import { readLlmConfigFromEnv } from "../app/llm/client.js";
 import {
   approveAutoReplyInRepository,
@@ -19,10 +19,16 @@ import {
   autoReplyCategories,
   autoReplyModes,
   classificationLabels,
+  escalationActions,
+  escalationRuleTypes,
   feedbackKinds,
   faqCandidateStatuses,
+  importances,
   llmRunStatuses,
   llmTaskTypes,
+  type EscalationAction,
+  type EscalationRule,
+  type EscalationRuleType,
   type AutoReplyCategory,
   type AutoReplyMode,
   type ClassificationLabel,
@@ -69,6 +75,104 @@ function categoryArray(
   return stringArray(value, fallback).filter((item): item is AutoReplyCategory =>
     autoReplyCategories.includes(item as AutoReplyCategory),
   );
+}
+
+function nonEmptyStringArray(value: unknown, fieldName: string): readonly string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array`);
+  }
+  const items = value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  if (items.length === 0) {
+    throw new Error(`${fieldName} must include at least one value`);
+  }
+  return items;
+}
+
+function escalationRuleTypeValue(value: unknown): EscalationRuleType {
+  if (typeof value === "string" && escalationRuleTypes.includes(value as EscalationRuleType)) {
+    return value as EscalationRuleType;
+  }
+  throw new Error(`unsupported escalation rule type: ${String(value)}`);
+}
+
+function escalationActionValue(value: unknown): EscalationAction {
+  if (typeof value === "string" && escalationActions.includes(value as EscalationAction)) {
+    return value as EscalationAction;
+  }
+  throw new Error(`unsupported escalation action: ${String(value)}`);
+}
+
+function escalationCondition(
+  ruleType: EscalationRuleType,
+  value: unknown,
+): Record<string, unknown> {
+  const condition = isRecord(value) ? value : {};
+  if (ruleType === "label") {
+    const labels = nonEmptyStringArray(condition.labels, "labels").filter((label) =>
+      classificationLabels.includes(label as ClassificationLabel),
+    );
+    if (labels.length === 0) throw new Error("labels must include a supported label");
+    return { labels };
+  }
+  if (ruleType === "category") {
+    const categories = nonEmptyStringArray(condition.categories, "categories").filter((category) =>
+      autoReplyCategories.includes(category as AutoReplyCategory),
+    );
+    if (categories.length === 0) throw new Error("categories must include a supported category");
+    return { categories };
+  }
+  if (ruleType === "keyword") {
+    return { keywords: nonEmptyStringArray(condition.keywords, "keywords") };
+  }
+  if (ruleType === "importance") {
+    const values = nonEmptyStringArray(condition.importances, "importances").filter((importance) =>
+      importances.includes(importance as (typeof importances)[number]),
+    );
+    if (values.length === 0) throw new Error("importances must include a supported importance");
+    return { importances: values };
+  }
+  if (ruleType === "confidence") {
+    const maxConfidence = condition.maxConfidence;
+    if (
+      typeof maxConfidence !== "number" ||
+      !Number.isFinite(maxConfidence) ||
+      maxConfidence < 0 ||
+      maxConfidence > 1
+    ) {
+      throw new Error("maxConfidence must be a number between 0 and 1");
+    }
+    return { maxConfidence };
+  }
+  return {};
+}
+
+function escalationRulesValue(
+  value: unknown,
+  policyGuildId: string,
+): readonly EscalationRule[] | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("escalationRules must be an array");
+  }
+  const timestamp = nowIso();
+  return value.map((item) => {
+    if (!isRecord(item)) {
+      throw new Error("escalation rule must be an object");
+    }
+    const ruleType = escalationRuleTypeValue(item.ruleType);
+    return {
+      id: typeof item.id === "string" && item.id.length > 0 ? item.id : newId(),
+      guildId: policyGuildId,
+      ruleType,
+      condition: escalationCondition(ruleType, item.condition),
+      action: escalationActionValue(item.action),
+      enabled: typeof item.enabled === "boolean" ? item.enabled : true,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : timestamp,
+      updatedAt: timestamp,
+    };
+  });
 }
 
 function feedbackKind(value: unknown): FeedbackKind {
@@ -194,29 +298,43 @@ export function createApiApp(runtime: AppRuntime) {
   app.put("/api/auto-reply/policy", async (context) => {
     const body = await requestBody(context.req.raw);
     const policy = await runtime.repository.getAutoReplyPolicy();
-    const mode = modeValue(body.mode, policy.mode);
-    const enabled =
-      typeof body.enabled === "boolean" ? body.enabled && mode !== "disabled" : policy.enabled;
-    const updated = await runtime.repository.updateAutoReplyPolicy({
-      ...policy,
-      enabled,
-      mode,
-      allowedChannelIds: stringArray(body.allowedChannelIds, policy.allowedChannelIds),
-      allowedLabels: labelArray(body.allowedLabels, policy.allowedLabels),
-      allowedCategories: categoryArray(body.allowedCategories, policy.allowedCategories),
-      minConfidence: numberValue(body.minConfidence, policy.minConfidence),
-      requireSourceForFaq:
-        typeof body.requireSourceForFaq === "boolean"
-          ? body.requireSourceForFaq
-          : policy.requireSourceForFaq,
-      updatedAt: nowIso(),
-    });
-    const settings = await runtime.repository.getSettings();
-    await runtime.repository.updateSettings({
-      ...syncSettingsWithAutoReplyPolicy(settings, updated),
-      updatedAt: nowIso(),
-    });
-    return context.json(updated);
+    try {
+      const rules = escalationRulesValue(body.escalationRules, policy.guildId);
+      const mode = modeValue(body.mode, policy.mode);
+      const enabled =
+        typeof body.enabled === "boolean" ? body.enabled && mode !== "disabled" : policy.enabled;
+      const updated = await runtime.repository.updateAutoReplyPolicy({
+        ...policy,
+        enabled,
+        mode,
+        allowedChannelIds: stringArray(body.allowedChannelIds, policy.allowedChannelIds),
+        allowedLabels: labelArray(body.allowedLabels, policy.allowedLabels),
+        allowedCategories: categoryArray(body.allowedCategories, policy.allowedCategories),
+        minConfidence: numberValue(body.minConfidence, policy.minConfidence),
+        requireSourceForFaq:
+          typeof body.requireSourceForFaq === "boolean"
+            ? body.requireSourceForFaq
+            : policy.requireSourceForFaq,
+        escalationRules: rules ?? policy.escalationRules,
+        updatedAt: nowIso(),
+      });
+      const updatedRules =
+        rules === null
+          ? updated.escalationRules
+          : await runtime.repository.replaceEscalationRules(updated.guildId, rules);
+      const responsePolicy = { ...updated, escalationRules: updatedRules };
+      const settings = await runtime.repository.getSettings();
+      await runtime.repository.updateSettings({
+        ...syncSettingsWithAutoReplyPolicy(settings, responsePolicy),
+        updatedAt: nowIso(),
+      });
+      return context.json(responsePolicy);
+    } catch (error) {
+      return context.json(
+        { error: error instanceof Error ? error.message : "invalid policy" },
+        400,
+      );
+    }
   });
 
   app.get("/api/auto-replies", async (context) =>

@@ -46,11 +46,17 @@ jobの可視化、E2Eに近い確認に移っている。
 - 高重要度、公式回答待ち、誤情報可能性、ルール違反候補が自動返信されないことを確認済み。
 - 関係のない雑談がユーザー返信とadmin-ops通知を増やさないことを確認済み。
 
-### `auto_reply_escalation_rules` の実装
+### `auto_reply_escalation_rules` の実装（完了）
 
-- DB schema と型はあるが、実ロジックとDashboard更新対象としては未実装。
-- 現状は固定の安全ゲートだけで判定している。
-- Phase 1 では、設定されたルールが自動返信判定に反映される状態まで実装する。
+2026-05-21 に実装済み。
+
+- `auto_reply_escalation_rules` テーブルを正として、設定された有効ルールを自動返信判定に反映する。
+- 固定の安全ゲートは維持しつつ、`label`、`category`、`keyword`、`importance`、`confidence`、`official_needed`、`privacy_or_rule`
+  を追加ルールとして評価する。
+- `notify_admin` は自動返信を運営確認へ回し、管理者通知を作成する。
+- `draft_for_approval` は返信案を承認待ちにする。
+- `do_not_reply` は本文なしでブロックする。
+- Dashboard の自動返信ポリシーから、構造化フォームでルールを追加・編集・削除できる。
 
 ### LLM生成関数の `Phase1State` 依存解消
 

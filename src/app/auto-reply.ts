@@ -1,5 +1,10 @@
 import { newId, nowIso } from "./ids.js";
 import {
+  fixedEscalationLabels,
+  matchAutoReplyEscalationRule,
+  sensitiveAutoReplyKeywords,
+} from "./auto-reply-rules.js";
+import {
   type AutoReply,
   type AutoReplyCategory,
   type AutoReplyPolicy,
@@ -8,22 +13,6 @@ import {
   type Message,
   type SourceRef,
 } from "../shared/types.js";
-
-const escalationLabels = ["公式回答待ち", "炎上兆候", "誤情報可能性", "ルール違反候補"] as const;
-
-const escalationKeywords = [
-  "法務",
-  "広報",
-  "料金",
-  "障害",
-  "ロードマップ",
-  "アカウント",
-  "課金",
-  "セキュリティ",
-  "APIキー",
-  "トークン",
-  "個人情報",
-] as const;
 
 function hasAllowedLabel(policy: AutoReplyPolicy, classification: Classification): boolean {
   return classification.labels.some((label) => policy.allowedLabels.includes(label));
@@ -102,10 +91,10 @@ function escalationReason(
   if (classification.confidence < policy.minConfidence) {
     return "confidenceが自動返信の閾値未満です。";
   }
-  if (escalationLabels.some((label) => classification.labels.includes(label))) {
+  if (fixedEscalationLabels.some((label) => classification.labels.includes(label))) {
     return "公式確認または運営確認が必要なラベルです。";
   }
-  if (escalationKeywords.some((keyword) => message.content.includes(keyword))) {
+  if (sensitiveAutoReplyKeywords.some((keyword) => message.content.includes(keyword))) {
     return "安全に自動回答できない話題を含みます。";
   }
   if (policy.mode === "faq_assist" && policy.requireSourceForFaq && sourceRefs.length === 0) {
@@ -162,6 +151,33 @@ export function decideAutoReply(
     };
   }
 
+  const matchedRule = matchAutoReplyEscalationRule(policy.escalationRules, {
+    message,
+    classification,
+    category,
+  });
+  if (matchedRule !== null) {
+    const status = matchedRule.rule.action === "do_not_reply" ? "blocked" : "escalated";
+    if (matchedRule.rule.action !== "draft_for_approval") {
+      return {
+        id: newId(),
+        messageId: message.id,
+        classificationId: classification.id,
+        mode: policy.mode,
+        replyCategory: category,
+        body: "",
+        sourceRefs,
+        confidence: classification.confidence,
+        decisionReason: matchedRule.reason,
+        status,
+        sentMessageId: null,
+        approvedBy: null,
+        sentAt: null,
+        createdAt,
+      };
+    }
+  }
+
   const body = replyBodyFor(message, category, sourceRefs);
   return {
     id: newId(),
@@ -173,13 +189,24 @@ export function decideAutoReply(
     sourceRefs,
     confidence: classification.confidence,
     decisionReason:
-      policy.mode === "approval_required"
-        ? "回答案を生成し、管理者承認を待ちます。"
-        : "許可範囲とエスカレーション条件を通過しました。",
-    status: policy.mode === "approval_required" ? "pending_approval" : "sent",
-    sentMessageId: policy.mode === "approval_required" ? null : newId(),
+      matchedRule?.rule.action === "draft_for_approval"
+        ? matchedRule.reason
+        : policy.mode === "approval_required"
+          ? "回答案を生成し、管理者承認を待ちます。"
+          : "許可範囲とエスカレーション条件を通過しました。",
+    status:
+      policy.mode === "approval_required" || matchedRule?.rule.action === "draft_for_approval"
+        ? "pending_approval"
+        : "sent",
+    sentMessageId:
+      policy.mode === "approval_required" || matchedRule?.rule.action === "draft_for_approval"
+        ? null
+        : newId(),
     approvedBy: null,
-    sentAt: policy.mode === "approval_required" ? null : createdAt,
+    sentAt:
+      policy.mode === "approval_required" || matchedRule?.rule.action === "draft_for_approval"
+        ? null
+        : createdAt,
     createdAt,
   };
 }

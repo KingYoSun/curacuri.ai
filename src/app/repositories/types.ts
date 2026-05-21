@@ -5,6 +5,7 @@ import type {
   AutoReply,
   AutoReplyPolicy,
   Classification,
+  EscalationRule,
   FaqCandidate,
   GuildSettings,
   LlmGenerationRun,
@@ -28,6 +29,11 @@ export type Phase1Repository = {
   updateSettings(settings: GuildSettings): Promise<GuildSettings>;
   getAutoReplyPolicy(): Promise<AutoReplyPolicy>;
   updateAutoReplyPolicy(policy: AutoReplyPolicy): Promise<AutoReplyPolicy>;
+  listEscalationRules(guildId?: string): Promise<readonly EscalationRule[]>;
+  replaceEscalationRules(
+    guildId: string,
+    rules: readonly EscalationRule[],
+  ): Promise<readonly EscalationRule[]>;
   upsertMessage(
     message: Message,
   ): Promise<{ readonly message: Message; readonly created: boolean }>;

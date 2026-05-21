@@ -238,4 +238,38 @@ describe("intake and auto reply boundaries", () => {
       sentMessageId: null,
     });
   });
+
+  it("applies escalation rules in the deterministic auto reply path", () => {
+    const settings = createDefaultSettings();
+    const policy = {
+      ...createDefaultAutoReplyPolicy(settings),
+      enabled: true,
+      mode: "intake_only" as const,
+      escalationRules: [
+        {
+          id: "00000000-0000-4000-8000-000000000005",
+          guildId: settings.guildId,
+          ruleType: "keyword" as const,
+          condition: { keywords: ["返信不要"] },
+          action: "do_not_reply" as const,
+          enabled: true,
+          createdAt: "2026-05-21T00:00:00.000Z",
+          updatedAt: "2026-05-21T00:00:00.000Z",
+        },
+      ],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "返信不要ですが、Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    const classification = classifyMessage(message);
+
+    expect(decideAutoReply(message, classification, policy, [])).toMatchObject({
+      status: "blocked",
+      body: "",
+    });
+  });
 });

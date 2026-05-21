@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { normalizeDiscordEvent, normalizeSampleRecord, parseSampleJsonl } from "./intake.js";
+import { matchAutoReplyEscalationRule } from "./auto-reply-rules.js";
 import { newId, nowIso } from "./ids.js";
 import { createDefaultLlmClient, type LlmClient } from "./llm/client.js";
 import {
@@ -9,7 +10,7 @@ import {
   generateFaqCandidatesWithLlm,
   generateWeeklyReportWithLlm,
 } from "./llm/generation.js";
-import { createAdminNotification } from "./notifications.js";
+import { createAdminNotification, createAutoReplyEscalationNotification } from "./notifications.js";
 import { buildWeeklyReportMetrics } from "./report.js";
 import { sampleLogPath } from "./workflow.js";
 import type { Phase1Repository } from "./repositories/types.js";
@@ -137,6 +138,13 @@ function normalizePendingSend(reply: AutoReply): AutoReply {
   };
 }
 
+function hasNotificationForMessage(
+  notifications: Iterable<AdminNotification>,
+  messageId: string,
+): boolean {
+  return [...notifications].some((notification) => notification.messageIds.includes(messageId));
+}
+
 export async function handleAutoReplyDecide(
   context: RepositoryWorkflow,
   payload: AutoReplyDecidePayload,
@@ -156,7 +164,32 @@ export async function handleAutoReplyDecide(
     ),
   );
   state.autoReplies.set(reply.id, reply);
+  const matchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
+    message,
+    classification,
+    category: reply.replyCategory,
+  });
+  let notifyJob: OpsNotifyPayload | null = null;
+  if (
+    matchedRule?.rule.action === "notify_admin" &&
+    !hasNotificationForMessage(state.notifications.values(), message.id)
+  ) {
+    const notification = createAutoReplyEscalationNotification(
+      message,
+      classification,
+      state.settings,
+      matchedRule.reason,
+    );
+    state.notifications.set(notification.id, notification);
+    notifyJob = {
+      classificationId: classification.id,
+      messageIds: [message.id],
+    };
+  }
   await context.repository.saveState(state);
+  if (notifyJob !== null) {
+    await context.queues.add("ops.notify", notifyJob);
+  }
   if (reply.status === "drafted") {
     await context.queues.add("auto_reply.send", {
       autoReplyId: reply.id,

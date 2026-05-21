@@ -1,6 +1,8 @@
 import type {
   AdminNotification,
   AutoReply,
+  EscalationAction,
+  EscalationRuleType,
   FeedbackKind,
   FaqCandidate,
   FaqCandidateStatus,
@@ -15,6 +17,22 @@ export const feedbackKindLabels: Record<FeedbackKind, string> = {
   missed: "見落とし",
   unsafe_or_too_much: "過剰または危険",
   needs_escalation: "運営確認が必要",
+};
+
+export const escalationRuleTypeLabels: Record<EscalationRuleType, string> = {
+  label: "ラベル",
+  category: "カテゴリ",
+  keyword: "キーワード",
+  importance: "重要度",
+  confidence: "confidence",
+  official_needed: "公式回答",
+  privacy_or_rule: "規約・個人情報",
+};
+
+export const escalationActionLabels: Record<EscalationAction, string> = {
+  notify_admin: "運営通知",
+  draft_for_approval: "承認待ち",
+  do_not_reply: "返信しない",
 };
 
 export const faqStatusLabels: Record<FaqCandidateStatus, string> = {

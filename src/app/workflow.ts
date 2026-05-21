@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import { matchAutoReplyEscalationRule } from "./auto-reply-rules.js";
 import { normalizeSampleRecord, parseSampleJsonl } from "./intake.js";
 import { createDefaultLlmClient, readLlmConfigFromEnv, type LlmClient } from "./llm/client.js";
 import {
@@ -8,7 +9,7 @@ import {
   generateFaqCandidatesWithLlm,
   generateWeeklyReportWithLlm,
 } from "./llm/generation.js";
-import { createAdminNotification } from "./notifications.js";
+import { createAdminNotification, createAutoReplyEscalationNotification } from "./notifications.js";
 import { buildWeeklyReportMetrics } from "./report.js";
 import { listByCreatedAt, listByIngestedAt, type Phase1State } from "./store.js";
 import { newId, nowIso } from "./ids.js";
@@ -46,6 +47,12 @@ function hasMessage(state: Phase1State, message: Message): boolean {
       existing.source === message.source &&
       existing.guildId === message.guildId &&
       existing.messageId === message.messageId,
+  );
+}
+
+function hasNotificationForMessage(state: Phase1State, messageId: string): boolean {
+  return [...state.notifications.values()].some((notification) =>
+    notification.messageIds.includes(messageId),
   );
 }
 
@@ -87,6 +94,23 @@ export async function processMessage(
 
   const autoReply = await generateAutoReplyWithLlm(state, message, classification, client);
   state.autoReplies.set(autoReply.id, autoReply);
+  const matchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
+    message,
+    classification,
+    category: autoReply.replyCategory,
+  });
+  if (
+    matchedRule?.rule.action === "notify_admin" &&
+    !hasNotificationForMessage(state, message.id)
+  ) {
+    const escalationNotification = createAutoReplyEscalationNotification(
+      message,
+      classification,
+      state.settings,
+      matchedRule.reason,
+    );
+    state.notifications.set(escalationNotification.id, escalationNotification);
+  }
 }
 
 export async function importSampleLog(

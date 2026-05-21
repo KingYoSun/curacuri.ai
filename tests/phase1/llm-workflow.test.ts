@@ -122,6 +122,157 @@ describe("LLM workflow", () => {
     });
   });
 
+  it("creates admin notifications for notify_admin escalation rules", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["support"],
+      escalationRules: [
+        {
+          id: "00000000-0000-4000-8000-000000000001",
+          guildId: state.settings.guildId,
+          ruleType: "keyword",
+          condition: { keywords: ["社外秘"] },
+          action: "notify_admin",
+          enabled: true,
+          createdAt: "2026-05-21T00:00:00.000Z",
+          updatedAt: "2026-05-21T00:00:00.000Z",
+        },
+      ],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "社外秘の設定ですが、Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+
+    await processMessage(state, message, new FakeLlmClient());
+
+    expect([...state.autoReplies.values()][0]).toMatchObject({
+      status: "escalated",
+      sentMessageId: null,
+    });
+    const notification = [...state.notifications.values()][0];
+    expect(notification?.title).toContain("自動返信エスカレーション");
+    expect(notification?.status).toBe("pending");
+  });
+
+  it("holds replies for approval when draft_for_approval escalation rules match", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["support"],
+      escalationRules: [
+        {
+          id: "00000000-0000-4000-8000-000000000002",
+          guildId: state.settings.guildId,
+          ruleType: "keyword",
+          condition: { keywords: ["確認してから"] },
+          action: "draft_for_approval",
+          enabled: true,
+          createdAt: "2026-05-21T00:00:00.000Z",
+          updatedAt: "2026-05-21T00:00:00.000Z",
+        },
+      ],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "確認してから返信したいです。Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+
+    await processMessage(state, message, new FakeLlmClient());
+
+    expect([...state.autoReplies.values()][0]).toMatchObject({
+      status: "pending_approval",
+      sentMessageId: null,
+    });
+  });
+
+  it("blocks replies when do_not_reply escalation rules match", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["support"],
+      escalationRules: [
+        {
+          id: "00000000-0000-4000-8000-000000000003",
+          guildId: state.settings.guildId,
+          ruleType: "keyword",
+          condition: { keywords: ["返信不要"] },
+          action: "do_not_reply",
+          enabled: true,
+          createdAt: "2026-05-21T00:00:00.000Z",
+          updatedAt: "2026-05-21T00:00:00.000Z",
+        },
+      ],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "返信不要ですが、Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+
+    await processMessage(state, message, new FakeLlmClient());
+
+    expect([...state.autoReplies.values()][0]).toMatchObject({
+      status: "blocked",
+      body: "",
+      sentMessageId: null,
+    });
+  });
+
+  it("ignores disabled escalation rules", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["support"],
+      escalationRules: [
+        {
+          id: "00000000-0000-4000-8000-000000000004",
+          guildId: state.settings.guildId,
+          ruleType: "keyword",
+          condition: { keywords: ["返信不要"] },
+          action: "do_not_reply",
+          enabled: false,
+          createdAt: "2026-05-21T00:00:00.000Z",
+          updatedAt: "2026-05-21T00:00:00.000Z",
+        },
+      ],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "返信不要という語はありますが、Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+
+    await processMessage(state, message, new FakeLlmClient());
+
+    expect([...state.autoReplies.values()][0]).toMatchObject({
+      status: "sent",
+    });
+  });
+
   it("retries a failed classification run", async () => {
     const state = createPhase1State();
     const message = normalizeSampleRecord(

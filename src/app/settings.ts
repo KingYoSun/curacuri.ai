@@ -58,6 +58,7 @@ export function createDefaultAutoReplyPolicy(settings: GuildSettings): AutoReply
     blockedCategories: ["legal", "pr", "pricing", "incident", "roadmap", "account", "security"],
     minConfidence: settings.autoReplyMinConfidence,
     requireSourceForFaq: true,
+    escalationRules: settings.autoReplyEscalationRules,
     createdAt: now,
     updatedAt: now,
   };
@@ -73,6 +74,7 @@ export function syncSettingsWithAutoReplyPolicy(
     autoReplyAllowedChannelIds: policy.allowedChannelIds,
     autoReplyAllowedLabels: policy.allowedLabels,
     autoReplyAllowedCategories: policy.allowedCategories,
+    autoReplyEscalationRules: policy.escalationRules,
     autoReplyMinConfidence: policy.minConfidence,
   };
 }

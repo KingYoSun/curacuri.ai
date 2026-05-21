@@ -3,6 +3,8 @@ import type {
   AutoReply,
   AutoReplyPolicy,
   Classification,
+  EscalationAction,
+  EscalationRuleType,
   FeedbackKind,
   FaqCandidate,
   GuildSettings,
@@ -30,6 +32,7 @@ export type Policy = Pick<
   | "allowedCategories"
   | "minConfidence"
   | "requireSourceForFaq"
+  | "escalationRules"
 >;
 
 export type LlmStatus = {
@@ -90,6 +93,16 @@ export type PolicyDraft = {
   readonly allowedCategories: string;
   readonly minConfidence: number;
   readonly requireSourceForFaq: boolean;
+  readonly escalationRules: readonly EscalationRuleDraft[];
+};
+
+export type EscalationRuleDraft = {
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly ruleType: EscalationRuleType;
+  readonly action: EscalationAction;
+  readonly conditionValue: string;
+  readonly createdAt?: string;
 };
 
 export type FeedbackDraft = {

@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckIcon, ChevronsUpDownIcon, Loader2Icon, SearchIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronsUpDownIcon,
+  Loader2Icon,
+  PlusIcon,
+  SearchIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -15,7 +22,12 @@ import {
   autoReplyCategories,
   autoReplyModes,
   classificationLabels,
+  escalationActions,
+  escalationRuleTypes,
   faqCandidateStatuses,
+  importances,
+  type EscalationRule,
+  type EscalationRuleType,
   type FaqCandidate,
   type FaqCandidateStatus,
 } from "../shared/types.js";
@@ -36,6 +48,8 @@ import {
   autoReplyCategoryLabels,
   autoReplyStatusLabels,
   confidenceLabel,
+  escalationActionLabels,
+  escalationRuleTypeLabels,
   faqPatchForStatus,
   faqStatusLabels,
   importanceLabels,
@@ -44,6 +58,7 @@ import {
 } from "./labels.js";
 import type {
   DashboardData,
+  EscalationRuleDraft,
   FeedbackDraft,
   MessageFilters,
   PolicyDraft,
@@ -87,6 +102,98 @@ function parseLines(value: string): readonly string[] {
     .filter((item) => item.length > 0);
 }
 
+function conditionValueFromRule(rule: EscalationRule): string {
+  if (rule.ruleType === "label") {
+    return lines(Array.isArray(rule.condition.labels) ? (rule.condition.labels as string[]) : []);
+  }
+  if (rule.ruleType === "category") {
+    return lines(
+      Array.isArray(rule.condition.categories) ? (rule.condition.categories as string[]) : [],
+    );
+  }
+  if (rule.ruleType === "keyword") {
+    return lines(
+      Array.isArray(rule.condition.keywords) ? (rule.condition.keywords as string[]) : [],
+    );
+  }
+  if (rule.ruleType === "importance") {
+    return lines(
+      Array.isArray(rule.condition.importances) ? (rule.condition.importances as string[]) : [],
+    );
+  }
+  if (rule.ruleType === "confidence") {
+    const value = rule.condition.maxConfidence;
+    return typeof value === "number" ? String(value) : "0.8";
+  }
+  return "";
+}
+
+function draftFromRule(rule: EscalationRule): EscalationRuleDraft {
+  return {
+    id: rule.id,
+    enabled: rule.enabled,
+    ruleType: rule.ruleType,
+    action: rule.action,
+    conditionValue: conditionValueFromRule(rule),
+    createdAt: rule.createdAt,
+  };
+}
+
+function defaultConditionValue(ruleType: EscalationRuleType): string {
+  if (ruleType === "confidence") return "0.8";
+  if (ruleType === "official_needed" || ruleType === "privacy_or_rule") return "";
+  return "";
+}
+
+function newRuleDraft(): EscalationRuleDraft {
+  return {
+    id: crypto.randomUUID(),
+    enabled: true,
+    ruleType: "keyword",
+    action: "notify_admin",
+    conditionValue: "",
+  };
+}
+
+function conditionLabelFor(ruleType: EscalationRuleType): string {
+  if (ruleType === "label") return "対象ラベル";
+  if (ruleType === "category") return "対象カテゴリ";
+  if (ruleType === "keyword") return "対象キーワード";
+  if (ruleType === "importance") return "対象重要度";
+  if (ruleType === "confidence") return "最大confidence";
+  return "条件";
+}
+
+function conditionDescriptionFor(ruleType: EscalationRuleType): string {
+  if (ruleType === "label") return `候補: ${classificationLabels.join(", ")}`;
+  if (ruleType === "category") return `候補: ${autoReplyCategories.join(", ")}`;
+  if (ruleType === "importance") return `候補: ${importances.join(", ")}`;
+  if (ruleType === "confidence") return "0.0から1.0の範囲で指定します。";
+  return "1行に1件ずつ指定します。";
+}
+
+function conditionFromRuleDraft(rule: EscalationRuleDraft): Record<string, unknown> {
+  if (rule.ruleType === "label") return { labels: parseLines(rule.conditionValue) };
+  if (rule.ruleType === "category") return { categories: parseLines(rule.conditionValue) };
+  if (rule.ruleType === "keyword") return { keywords: parseLines(rule.conditionValue) };
+  if (rule.ruleType === "importance") return { importances: parseLines(rule.conditionValue) };
+  if (rule.ruleType === "confidence") {
+    return { maxConfidence: Number.parseFloat(rule.conditionValue) };
+  }
+  return {};
+}
+
+function rulePayloadFromDraft(rule: EscalationRuleDraft): Record<string, unknown> {
+  return {
+    id: rule.id,
+    ruleType: rule.ruleType,
+    action: rule.action,
+    enabled: rule.enabled,
+    condition: conditionFromRuleDraft(rule),
+    ...(rule.createdAt === undefined ? {} : { createdAt: rule.createdAt }),
+  };
+}
+
 function settingsDraftFromData(data: DashboardData["settings"]): SettingsDraft {
   return {
     targetChannelIds: lines(data.targetChannelIds),
@@ -107,6 +214,7 @@ function policyDraftFromData(data: DashboardData["policy"]): PolicyDraft {
     allowedCategories: lines(data.allowedCategories),
     minConfidence: data.minConfidence,
     requireSourceForFaq: data.requireSourceForFaq,
+    escalationRules: data.escalationRules.map(draftFromRule),
   };
 }
 
@@ -384,6 +492,7 @@ export function App() {
                       allowedCategories: parseLines(policyDraft.allowedCategories),
                       minConfidence: policyDraft.minConfidence,
                       requireSourceForFaq: policyDraft.requireSourceForFaq,
+                      escalationRules: policyDraft.escalationRules.map(rulePayloadFromDraft),
                     });
                   },
                   { preserveDirtyDrafts: false },
@@ -771,6 +880,56 @@ function PolicyPanel(props: {
             FAQ参照元を必須にする
           </label>
         </div>
+        <div className="grid gap-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-medium">エスカレーションルール</div>
+              <div className="text-sm text-muted-foreground">
+                条件に一致した投稿は自動返信せず、指定した扱いに切り替えます。
+              </div>
+            </div>
+            <Button
+              size="sm"
+              type="button"
+              variant="outline"
+              onClick={() => {
+                props.onChange({
+                  ...props.draft,
+                  escalationRules: [...props.draft.escalationRules, newRuleDraft()],
+                });
+              }}
+            >
+              <PlusIcon />
+              追加
+            </Button>
+          </div>
+          {props.draft.escalationRules.length === 0 ? (
+            <EmptyList description="追加ルールはありません。" title="ルール未設定" />
+          ) : (
+            props.draft.escalationRules.map((rule, index) => (
+              <EscalationRuleEditor
+                key={rule.id}
+                rule={rule}
+                onChange={(updatedRule) => {
+                  props.onChange({
+                    ...props.draft,
+                    escalationRules: props.draft.escalationRules.map((candidate, ruleIndex) =>
+                      ruleIndex === index ? updatedRule : candidate,
+                    ),
+                  });
+                }}
+                onRemove={() => {
+                  props.onChange({
+                    ...props.draft,
+                    escalationRules: props.draft.escalationRules.filter(
+                      (_candidate, ruleIndex) => ruleIndex !== index,
+                    ),
+                  });
+                }}
+              />
+            ))
+          )}
+        </div>
         <div className="flex flex-wrap justify-end gap-2">
           <Button
             disabled={!props.dirty || props.pending}
@@ -786,6 +945,87 @@ function PolicyPanel(props: {
         </div>
       </div>
     </SectionCard>
+  );
+}
+
+function EscalationRuleEditor(props: {
+  readonly rule: EscalationRuleDraft;
+  readonly onChange: (rule: EscalationRuleDraft) => void;
+  readonly onRemove: () => void;
+}) {
+  return (
+    <div className="grid gap-3 rounded-lg border p-3">
+      <div className="flex items-center justify-between gap-3">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <Checkbox
+            checked={props.rule.enabled}
+            onCheckedChange={(checked) => {
+              props.onChange({ ...props.rule, enabled: checked === true });
+            }}
+          />
+          有効
+        </label>
+        <Button size="icon-sm" type="button" variant="ghost" onClick={props.onRemove}>
+          <Trash2Icon />
+          <span className="sr-only">削除</span>
+        </Button>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <SelectField
+          label="ルール種別"
+          options={escalationRuleTypes.map((ruleType) => ({
+            value: ruleType,
+            label: escalationRuleTypeLabels[ruleType],
+          }))}
+          value={props.rule.ruleType}
+          onChange={(ruleType) => {
+            props.onChange({
+              ...props.rule,
+              ruleType,
+              conditionValue: defaultConditionValue(ruleType),
+            });
+          }}
+        />
+        <SelectField
+          label="アクション"
+          options={escalationActions.map((action) => ({
+            value: action,
+            label: escalationActionLabels[action],
+          }))}
+          value={props.rule.action}
+          onChange={(action) => {
+            props.onChange({ ...props.rule, action });
+          }}
+        />
+      </div>
+      {props.rule.ruleType === "official_needed" || props.rule.ruleType === "privacy_or_rule" ? (
+        <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+          このルール種別は分類結果と固定キーワードから判定します。
+        </div>
+      ) : props.rule.ruleType === "confidence" ? (
+        <TextField
+          description={conditionDescriptionFor(props.rule.ruleType)}
+          label={conditionLabelFor(props.rule.ruleType)}
+          max={1}
+          min={0}
+          step={0.01}
+          type="number"
+          value={props.rule.conditionValue}
+          onChange={(value) => {
+            props.onChange({ ...props.rule, conditionValue: value });
+          }}
+        />
+      ) : (
+        <TextAreaField
+          description={conditionDescriptionFor(props.rule.ruleType)}
+          label={conditionLabelFor(props.rule.ruleType)}
+          value={props.rule.conditionValue}
+          onChange={(value) => {
+            props.onChange({ ...props.rule, conditionValue: value });
+          }}
+        />
+      )}
+    </div>
   );
 }
 

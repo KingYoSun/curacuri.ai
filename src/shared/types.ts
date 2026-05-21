@@ -67,6 +67,18 @@ export const escalationActions = ["notify_admin", "draft_for_approval", "do_not_
 
 export type EscalationAction = (typeof escalationActions)[number];
 
+export const escalationRuleTypes = [
+  "label",
+  "category",
+  "keyword",
+  "importance",
+  "confidence",
+  "official_needed",
+  "privacy_or_rule",
+] as const;
+
+export type EscalationRuleType = (typeof escalationRuleTypes)[number];
+
 export const feedbackKinds = [
   "useful",
   "unnecessary",
@@ -207,6 +219,7 @@ export type AutoReplyPolicy = {
   readonly blockedCategories: readonly string[];
   readonly minConfidence: number;
   readonly requireSourceForFaq: boolean;
+  readonly escalationRules: readonly EscalationRule[];
   readonly createdAt: string;
   readonly updatedAt: string;
 };
@@ -214,14 +227,7 @@ export type AutoReplyPolicy = {
 export type EscalationRule = {
   readonly id: string;
   readonly guildId: string;
-  readonly ruleType:
-    | "label"
-    | "category"
-    | "keyword"
-    | "importance"
-    | "confidence"
-    | "official_needed"
-    | "privacy_or_rule";
+  readonly ruleType: EscalationRuleType;
   readonly condition: Record<string, unknown>;
   readonly action: EscalationAction;
   readonly enabled: boolean;

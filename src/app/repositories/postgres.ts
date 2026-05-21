@@ -14,6 +14,7 @@ import type {
   Classification,
   ClassificationLabel,
   CurrentAnswerStatus,
+  EscalationRule,
   FaqCandidate,
   FaqCandidateStatus,
   FeedbackKind,
@@ -95,7 +96,7 @@ function dateOnly(row: DbRow, key: string): string {
   return text(row, key).slice(0, 10);
 }
 
-function mapSettings(row: DbRow): GuildSettings {
+function mapSettings(row: DbRow, escalationRules: readonly EscalationRule[]): GuildSettings {
   return {
     id: text(row, "id"),
     guildId: text(row, "guild_id"),
@@ -115,14 +116,14 @@ function mapSettings(row: DbRow): GuildSettings {
       row,
       "auto_reply_allowed_categories",
     ) as readonly AutoReplyCategory[],
-    autoReplyEscalationRules: [],
+    autoReplyEscalationRules: escalationRules,
     autoReplyMinConfidence: numberValue(row, "auto_reply_min_confidence"),
     createdAt: text(row, "created_at"),
     updatedAt: text(row, "updated_at"),
   };
 }
 
-function mapPolicy(row: DbRow): AutoReplyPolicy {
+function mapPolicy(row: DbRow, escalationRules: readonly EscalationRule[]): AutoReplyPolicy {
   return {
     id: text(row, "id"),
     guildId: text(row, "guild_id"),
@@ -134,6 +135,20 @@ function mapPolicy(row: DbRow): AutoReplyPolicy {
     blockedCategories: textArray(row, "blocked_categories"),
     minConfidence: numberValue(row, "min_confidence"),
     requireSourceForFaq: booleanValue(row, "require_source_for_faq"),
+    escalationRules,
+    createdAt: text(row, "created_at"),
+    updatedAt: text(row, "updated_at"),
+  };
+}
+
+function mapEscalationRule(row: DbRow): EscalationRule {
+  return {
+    id: text(row, "id"),
+    guildId: text(row, "guild_id"),
+    ruleType: text(row, "rule_type") as EscalationRule["ruleType"],
+    condition: jsonRecord(row, "condition"),
+    action: text(row, "action") as EscalationRule["action"],
+    enabled: booleanValue(row, "enabled"),
     createdAt: text(row, "created_at"),
     updatedAt: text(row, "updated_at"),
   };
@@ -357,6 +372,10 @@ export class PostgresPhase1Repository implements Phase1Repository {
   async saveState(state: Phase1State): Promise<void> {
     await this.updateSettings(state.settings);
     await this.updateAutoReplyPolicy(state.autoReplyPolicy);
+    await this.replaceEscalationRules(
+      state.autoReplyPolicy.guildId,
+      state.autoReplyPolicy.escalationRules,
+    );
     for (const message of state.messages.values()) await this.upsertMessage(message);
     for (const item of state.classifications.values()) await this.saveClassification(item);
     for (const item of state.notifications.values()) await this.saveNotification(item);
@@ -373,7 +392,7 @@ export class PostgresPhase1Repository implements Phase1Repository {
     );
     const row = rows(result)[0];
     if (row === undefined) throw new Error("guild_settings seed is missing");
-    return mapSettings(row);
+    return mapSettings(row, await this.listEscalationRules(text(row, "guild_id")));
   }
 
   async updateSettings(settings: GuildSettings): Promise<GuildSettings> {
@@ -383,7 +402,8 @@ export class PostgresPhase1Repository implements Phase1Repository {
         target_channel_ids=$2, excluded_channel_ids=$3, admin_notification_channel_id=$4,
         retention_days=$5, character_name=$6, character_tone=$7, auto_reply_mode=$8,
         auto_reply_allowed_channel_ids=$9, auto_reply_allowed_labels=$10,
-        auto_reply_allowed_categories=$11, auto_reply_min_confidence=$12, updated_at=$13
+        auto_reply_allowed_categories=$11, auto_reply_escalation_rules=$12,
+        auto_reply_min_confidence=$13, updated_at=$14
       WHERE id=$1 RETURNING *`,
       [
         settings.id,
@@ -397,13 +417,14 @@ export class PostgresPhase1Repository implements Phase1Repository {
         settings.autoReplyAllowedChannelIds,
         settings.autoReplyAllowedLabels,
         settings.autoReplyAllowedCategories,
+        JSON.stringify(settings.autoReplyEscalationRules),
         settings.autoReplyMinConfidence,
         updatedAt,
       ],
     );
     const row = rows(result)[0];
     if (row === undefined) throw new Error("settings update failed");
-    return mapSettings(row);
+    return mapSettings(row, settings.autoReplyEscalationRules);
   }
 
   async getAutoReplyPolicy(): Promise<AutoReplyPolicy> {
@@ -412,7 +433,7 @@ export class PostgresPhase1Repository implements Phase1Repository {
     );
     const row = rows(result)[0];
     if (row === undefined) throw new Error("auto_reply_policies seed is missing");
-    return mapPolicy(row);
+    return mapPolicy(row, await this.listEscalationRules(text(row, "guild_id")));
   }
 
   async updateAutoReplyPolicy(policy: AutoReplyPolicy): Promise<AutoReplyPolicy> {
@@ -436,7 +457,59 @@ export class PostgresPhase1Repository implements Phase1Repository {
     );
     const row = rows(result)[0];
     if (row === undefined) throw new Error("auto reply policy update failed");
-    return mapPolicy(row);
+    return mapPolicy(row, policy.escalationRules);
+  }
+
+  async listEscalationRules(guildId?: string): Promise<readonly EscalationRule[]> {
+    const result =
+      guildId === undefined
+        ? await this.#pool.query("SELECT * FROM auto_reply_escalation_rules ORDER BY created_at")
+        : await this.#pool.query(
+            "SELECT * FROM auto_reply_escalation_rules WHERE guild_id=$1 ORDER BY created_at",
+            [guildId],
+          );
+    return rows(result).map(mapEscalationRule);
+  }
+
+  async replaceEscalationRules(
+    guildId: string,
+    rules: readonly EscalationRule[],
+  ): Promise<readonly EscalationRule[]> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM auto_reply_escalation_rules WHERE guild_id=$1", [guildId]);
+      for (const rule of rules) {
+        await client.query(
+          `INSERT INTO auto_reply_escalation_rules (
+            id, guild_id, rule_type, condition, action, enabled, created_at, updated_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [
+            rule.id,
+            guildId,
+            rule.ruleType,
+            JSON.stringify(rule.condition),
+            rule.action,
+            rule.enabled,
+            rule.createdAt,
+            rule.updatedAt,
+          ],
+        );
+      }
+      await client.query(
+        `UPDATE guild_settings
+         SET auto_reply_escalation_rules=$2, updated_at=$3
+         WHERE guild_id=$1`,
+        [guildId, JSON.stringify(rules), nowIso()],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return this.listEscalationRules(guildId);
   }
 
   async upsertMessage(
