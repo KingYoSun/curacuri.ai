@@ -45,6 +45,13 @@ export type Phase1Repository = {
   listNotifications(): Promise<readonly AdminNotification[]>;
   getNotification(id: string): Promise<AdminNotification | null>;
   saveNotification(notification: AdminNotification): Promise<void>;
+  claimPendingNotificationSend(id: string, claimToken: string): Promise<AdminNotification | null>;
+  markClaimedNotificationSent(
+    id: string,
+    claimToken: string,
+    sentMessageId: string,
+  ): Promise<boolean>;
+  markClaimedNotificationFailed(id: string, claimToken: string, reason: string): Promise<boolean>;
   markNotificationSent(id: string, sentMessageId: string): Promise<void>;
   markNotificationFailed(id: string, reason: string): Promise<void>;
   dismissNotification(id: string): Promise<void>;

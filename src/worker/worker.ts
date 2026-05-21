@@ -13,6 +13,7 @@ import {
 import { nowIso } from "../app/ids.js";
 import { createDiscordSender } from "../bot/discord-sender.js";
 import { queueNames, type QueueName, type QueuePayload } from "../shared/queue.js";
+import { sendPendingNotifications } from "./notifications.js";
 import type {
   AutoReplyDecidePayload,
   AutoReplySendPayload,
@@ -25,23 +26,6 @@ import type { AutoReply } from "../shared/types.js";
 
 const runtime = await createAppRuntime();
 const sender = createDiscordSender();
-
-async function sendPendingNotifications(): Promise<void> {
-  const notifications = (await runtime.repository.listNotifications()).filter(
-    (notification) => notification.status === "pending",
-  );
-  for (const notification of notifications) {
-    try {
-      const result = await sender.sendAdminNotification(notification);
-      await runtime.repository.markNotificationSent(notification.id, result.sentMessageId);
-    } catch (error) {
-      await runtime.repository.markNotificationFailed(
-        notification.id,
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-  }
-}
 
 async function sendAutoReply(autoReplyId: string): Promise<void> {
   const reply = await runtime.repository.getAutoReply(autoReplyId);
@@ -84,7 +68,7 @@ async function handleJob(queueName: QueueName, job: Job<QueuePayload>): Promise<
       await handleMessageClassify(runtime, job.data as MessageClassifyPayload);
       return;
     case "ops.notify":
-      await sendPendingNotifications();
+      await sendPendingNotifications(runtime.repository, sender);
       return;
     case "auto_reply.decide":
       await handleAutoReplyDecide(runtime, job.data as AutoReplyDecidePayload);

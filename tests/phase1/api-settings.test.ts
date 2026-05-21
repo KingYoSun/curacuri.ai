@@ -75,6 +75,15 @@ function createSettingsRuntime(): AppRuntime {
     saveNotification() {
       return unsupportedPromise();
     },
+    claimPendingNotificationSend() {
+      return unsupportedPromise();
+    },
+    markClaimedNotificationSent() {
+      return unsupportedPromise();
+    },
+    markClaimedNotificationFailed() {
+      return unsupportedPromise();
+    },
     markNotificationSent() {
       return unsupportedPromise();
     },

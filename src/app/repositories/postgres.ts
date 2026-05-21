@@ -652,7 +652,9 @@ export class PostgresPhase1Repository implements Phase1Repository {
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
       ON CONFLICT (id) DO UPDATE SET
         status=EXCLUDED.status, sent_message_id=EXCLUDED.sent_message_id,
-        sent_at=EXCLUDED.sent_at, failure_reason=EXCLUDED.failure_reason`,
+        sent_at=EXCLUDED.sent_at, failure_reason=EXCLUDED.failure_reason
+      WHERE admin_notifications.status='pending'
+        AND admin_notifications.sent_message_id IS NULL`,
       [
         item.id,
         item.notificationType,
@@ -668,6 +670,49 @@ export class PostgresPhase1Repository implements Phase1Repository {
         item.createdAt,
       ],
     );
+  }
+
+  async claimPendingNotificationSend(
+    id: string,
+    claimToken: string,
+  ): Promise<AdminNotification | null> {
+    const result = await this.#pool.query(
+      `UPDATE admin_notifications
+       SET sent_message_id=$2, failure_reason=NULL
+       WHERE id=$1 AND status='pending' AND sent_message_id IS NULL
+       RETURNING *`,
+      [id, claimToken],
+    );
+    const row = rows(result)[0];
+    return row === undefined ? null : mapNotification(row);
+  }
+
+  async markClaimedNotificationSent(
+    id: string,
+    claimToken: string,
+    sentMessageId: string,
+  ): Promise<boolean> {
+    const result = await this.#pool.query(
+      `UPDATE admin_notifications
+       SET status='sent', sent_message_id=$3, sent_at=$4, failure_reason=NULL
+       WHERE id=$1 AND status='pending' AND sent_message_id=$2`,
+      [id, claimToken, sentMessageId, nowIso()],
+    );
+    return result.rowCount === 1;
+  }
+
+  async markClaimedNotificationFailed(
+    id: string,
+    claimToken: string,
+    reason: string,
+  ): Promise<boolean> {
+    const result = await this.#pool.query(
+      `UPDATE admin_notifications
+       SET status='failed', sent_message_id=NULL, sent_at=NULL, failure_reason=$3
+       WHERE id=$1 AND status='pending' AND sent_message_id=$2`,
+      [id, claimToken, reason],
+    );
+    return result.rowCount === 1;
   }
 
   async markNotificationSent(id: string, sentMessageId: string): Promise<void> {

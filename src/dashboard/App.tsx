@@ -31,6 +31,7 @@ import {
   type FaqCandidate,
   type FaqCandidateStatus,
 } from "../shared/types.js";
+import { isNotificationSendClaim } from "../shared/notifications.js";
 import { loadDashboardData, patchFaqCandidate, postFeedback, sendJson } from "./api.js";
 import {
   ConfirmAction,
@@ -1270,6 +1271,12 @@ function NotificationsPanel(props: {
   readonly onShowMore: () => void;
 }) {
   const shown = itemLimit(props.items, props.limit);
+  const notificationSendLabel = (sentMessageId: string | null): string => {
+    if (isNotificationSendClaim(sentMessageId)) {
+      return "送信処理中";
+    }
+    return sentMessageId ?? "未送信";
+  };
   return (
     <SectionCard
       action={<CountBadge shown={shown.length} total={props.items.length} />}
@@ -1293,7 +1300,7 @@ function NotificationsPanel(props: {
                       </Badge>
                       <Badge variant="outline">{item.importance}</Badge>
                       <span className="break-all text-xs text-muted-foreground">
-                        {item.sentToChannelId} / {item.sentMessageId ?? "未送信"}
+                        {item.sentToChannelId} / {notificationSendLabel(item.sentMessageId)}
                       </span>
                     </div>
                     <p className="mt-2 break-words text-sm text-muted-foreground">

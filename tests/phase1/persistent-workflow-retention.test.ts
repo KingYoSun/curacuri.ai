@@ -149,6 +149,50 @@ class MemoryRepository implements Phase1Repository {
     return Promise.resolve();
   }
 
+  claimPendingNotificationSend(id: string, claimToken: string): Promise<AdminNotification | null> {
+    const notification = this.state.notifications.get(id);
+    if (notification?.status !== "pending" || notification.sentMessageId !== null) {
+      return Promise.resolve(null);
+    }
+    const claimed = { ...notification, sentMessageId: claimToken, failureReason: null };
+    this.state.notifications.set(id, claimed);
+    return Promise.resolve(claimed);
+  }
+
+  markClaimedNotificationSent(
+    id: string,
+    claimToken: string,
+    sentMessageId: string,
+  ): Promise<boolean> {
+    const notification = this.state.notifications.get(id);
+    if (notification?.status !== "pending" || notification.sentMessageId !== claimToken) {
+      return Promise.resolve(false);
+    }
+    this.state.notifications.set(id, {
+      ...notification,
+      status: "sent",
+      sentMessageId,
+      sentAt: "2026-05-21T00:00:00.000Z",
+      failureReason: null,
+    });
+    return Promise.resolve(true);
+  }
+
+  markClaimedNotificationFailed(id: string, claimToken: string, reason: string): Promise<boolean> {
+    const notification = this.state.notifications.get(id);
+    if (notification?.status !== "pending" || notification.sentMessageId !== claimToken) {
+      return Promise.resolve(false);
+    }
+    this.state.notifications.set(id, {
+      ...notification,
+      status: "failed",
+      sentMessageId: null,
+      sentAt: null,
+      failureReason: reason,
+    });
+    return Promise.resolve(true);
+  }
+
   markNotificationSent(): Promise<void> {
     return Promise.resolve();
   }

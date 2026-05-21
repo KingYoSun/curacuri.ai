@@ -84,6 +84,15 @@ function createDashboardRuntime(seed: {
       state.notifications.set(notification.id, notification);
       return Promise.resolve();
     },
+    claimPendingNotificationSend() {
+      return unsupportedPromise();
+    },
+    markClaimedNotificationSent() {
+      return unsupportedPromise();
+    },
+    markClaimedNotificationFailed() {
+      return unsupportedPromise();
+    },
     markNotificationSent() {
       return unsupportedPromise();
     },
