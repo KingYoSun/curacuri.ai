@@ -68,6 +68,30 @@ services:
       redis:
         condition: service_healthy
 
+  bot:
+    build: .
+    command: pnpm dev:bot
+    environment:
+      DATABASE_URL: postgres://curacuri:curacuri@postgres:5432/curacuri
+      REDIS_URL: redis://redis:6379
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-30000}
+      LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
+      LLM_RESPONSE_FORMAT: ${LLM_RESPONSE_FORMAT:-json_object}
+      DISCORD_TOKEN: ${DISCORD_TOKEN:-}
+      DISCORD_DRY_RUN: ${DISCORD_DRY_RUN:-true}
+      CURACURI_ENV: ${CURACURI_ENV:-local}
+      NODE_ENV: ${NODE_ENV:-development}
+      DISCORD_TEST_ALLOW_BOT_AUTHORS: ${DISCORD_TEST_ALLOW_BOT_AUTHORS:-false}
+      DISCORD_TEST_ALLOWED_BOT_AUTHOR_IDS: ${DISCORD_TEST_ALLOWED_BOT_AUTHOR_IDS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   dashboard:
     build: .
     command: pnpm dev:dashboard --host 0.0.0.0

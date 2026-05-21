@@ -81,7 +81,8 @@ Docker Compose で確認する場合は次を使います。
 docker compose up --build
 ```
 
-Docker Compose もリポジトリルートの `.env` を参照します。秘密値を含む `.env` はgit管理しません。
+Docker Compose は API、worker、bot、Dashboard、PostgreSQL、Redis を起動します。リポジトリルートの
+`.env` を参照します。秘密値を含む `.env` はgit管理しません。
 
 Discord 実接続には `DISCORD_TOKEN` と Message Content
 Intent が必要です。DMは取り込まず、`guild_settings.target_channel_ids`

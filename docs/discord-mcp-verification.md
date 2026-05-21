@@ -68,7 +68,7 @@ docker compose -f docker-compose.discord-mcp.yml down
 
 ## 検証シナリオ
 
-1. curacuri.ai の API、worker、bot を起動する。
+1. `docker compose up --build` で curacuri.ai の API、worker、bot を起動する。
 2. Dashboard で `guild_settings.target_channel_ids`、`excluded_channel_ids`、
    `admin_notification_channel_id` を検証用チャンネルIDに更新する。
 3. SaseQ/discord-mcp から対象チャンネルへ投稿し、`discord.ingest` に入ることを確認する。
