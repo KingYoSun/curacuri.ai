@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { activeWorkflowData } from "./active-data.js";
+import { shouldCreateAutoReplyDecision } from "./auto-reply-eligibility.js";
 import { normalizeDiscordEvent, normalizeSampleRecord, parseSampleJsonl } from "./intake.js";
 import { matchAutoReplyEscalationRule } from "./auto-reply-rules.js";
 import { newId, nowIso } from "./ids.js";
@@ -126,10 +127,12 @@ export async function handleMessageClassify(
         messageIds: [message.id],
       } satisfies OpsNotifyPayload);
     }
-    followUpJobs.push({
-      messageId: message.id,
-      classificationId: classification.id,
-    } satisfies AutoReplyDecidePayload);
+    if (shouldCreateAutoReplyDecision(classification, state.autoReplyPolicy)) {
+      followUpJobs.push({
+        messageId: message.id,
+        classificationId: classification.id,
+      } satisfies AutoReplyDecidePayload);
+    }
   }
   await context.repository.saveState(state);
   for (const job of followUpJobs) {
@@ -176,6 +179,9 @@ export async function handleAutoReplyDecide(
   ) {
     return;
   }
+  if (!shouldCreateAutoReplyDecision(classification, state.autoReplyPolicy)) {
+    return;
+  }
   const autoReplyResult = await generateAutoReplyWithLlm(
     message,
     classification,
@@ -184,6 +190,10 @@ export async function handleAutoReplyDecide(
     clientOrDefault(context.llmClient),
   );
   saveLlmRun(state.llmGenerationRuns, autoReplyResult.run);
+  if (autoReplyResult.autoReply === null) {
+    await context.repository.saveState(state);
+    return;
+  }
   const reply = normalizePendingSend(autoReplyResult.autoReply);
   state.autoReplies.set(reply.id, reply);
   const matchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
@@ -317,9 +327,10 @@ export async function enqueueReprocess(
       targetId === undefined
         ? await repository.listMessages()
         : [await repository.getMessage(targetId)].filter((message) => message !== null);
+    const policy = await repository.getAutoReplyPolicy();
     for (const message of messages) {
       const classification = await repository.findClassificationByMessageId(message.id);
-      if (classification !== null) {
+      if (classification !== null && shouldCreateAutoReplyDecision(classification, policy)) {
         await queues.add("auto_reply.decide", {
           messageId: message.id,
           classificationId: classification.id,

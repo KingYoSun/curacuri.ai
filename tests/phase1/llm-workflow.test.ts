@@ -319,6 +319,48 @@ describe("LLM workflow", () => {
     });
   });
 
+  it("does not create auto reply records for low-value small talk", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["general"],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "今日は夕方の空がきれいでした。",
+        channel_context: "#general / 雑談",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+
+    await processMessage(
+      state,
+      message,
+      new FakeLlmClient({
+        overrides: {
+          classification: {
+            labels: ["雑談"],
+            importance: "low",
+            admin_action_needed: false,
+            admin_action_type: "none",
+            confidence: 0.94,
+            reason: "一般的な雑談のため。",
+            suggested_summary: "夕方の空についての雑談。",
+          },
+        },
+      }),
+    );
+
+    expect(state.classifications.size).toBe(1);
+    expect(state.autoReplies.size).toBe(0);
+    expect([...state.llmGenerationRuns.values()].some((run) => run.taskType === "auto_reply")).toBe(
+      false,
+    );
+  });
+
   it("creates admin notifications for notify_admin escalation rules", async () => {
     const state = createPhase1State();
     state.autoReplyPolicy = {

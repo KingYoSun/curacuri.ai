@@ -376,6 +376,176 @@ function userPrompt(client: RecordingLlmClient, taskType: LlmJsonRequest["taskTy
 }
 
 describe("persistent workflow retention filtering", () => {
+  it("does not enqueue auto reply decisions for low-value small talk", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["general"],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "今日は夕方の空がきれいでした。",
+        channel_context: "#general / 雑談",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+    const repository = new MemoryRepository(state);
+    const queues = new MemoryQueue();
+    const client = new RecordingLlmClient({
+      classification: {
+        labels: ["雑談"],
+        importance: "low",
+        admin_action_needed: false,
+        admin_action_type: "none",
+        confidence: 0.94,
+        reason: "一般的な雑談のため。",
+        suggested_summary: "夕方の空についての雑談。",
+      },
+    });
+
+    await handleMessageClassify(
+      { repository, queues, llmClient: client },
+      { messageId: message.id },
+    );
+
+    expect(queues.jobs.map((job) => job.queueName)).not.toContain("auto_reply.decide");
+    expect(state.autoReplies.size).toBe(0);
+    expect(client.requests.map((request) => request.taskType)).toEqual(["classification"]);
+  });
+
+  it("does not create auto reply records for stale small talk decision jobs", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["general"],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "今日は夕方の空がきれいでした。",
+        channel_context: "#general / 雑談",
+      },
+      0,
+    );
+    const classification = classificationFor(message, {
+      labels: ["雑談"],
+      importance: "low",
+      adminActionNeeded: false,
+      adminActionType: "none",
+    });
+    state.messages.set(message.id, message);
+    state.classifications.set(classification.id, classification);
+    const repository = new MemoryRepository(state);
+    const client = new RecordingLlmClient({});
+
+    await handleAutoReplyDecide(
+      { repository, queues: new MemoryQueue(), llmClient: client },
+      { messageId: message.id, classificationId: classification.id },
+    );
+
+    expect(state.autoReplies.size).toBe(0);
+    expect(client.requests).toEqual([]);
+    expect([...state.llmGenerationRuns.values()].some((run) => run.taskType === "auto_reply")).toBe(
+      false,
+    );
+  });
+
+  it("does not create escalated records for ordinary posts outside allowed labels", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["general"],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "今回のアップデート、雰囲気がよくて好きです。",
+        channel_context: "#general / 雑談",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+    const repository = new MemoryRepository(state);
+    const queues = new MemoryQueue();
+    const client = new RecordingLlmClient({
+      classification: {
+        labels: ["称賛"],
+        importance: "medium",
+        admin_action_needed: false,
+        admin_action_type: "weekly_report",
+        confidence: 0.9,
+        reason: "ポジティブな感想だが運営対応は不要なため。",
+        suggested_summary: "アップデートへの称賛。",
+      },
+    });
+
+    await handleMessageClassify(
+      { repository, queues, llmClient: client },
+      { messageId: message.id },
+    );
+
+    expect(queues.jobs.map((job) => job.queueName)).not.toContain("auto_reply.decide");
+    expect(state.autoReplies.size).toBe(0);
+  });
+
+  it("keeps high-risk posts outside allowed labels on the auto reply safety path", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["support"],
+      allowedLabels: ["質問"],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "無料プランは来月で全部終了って本当ですか？",
+        channel_context: "#support / 料金質問",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+    const repository = new MemoryRepository(state);
+    const queues = new MemoryQueue();
+    const client = new RecordingLlmClient({
+      classification: {
+        labels: ["公式回答待ち"],
+        importance: "high",
+        admin_action_needed: true,
+        admin_action_type: "reply_check",
+        confidence: 0.91,
+        reason: "料金に関する公式確認が必要なため。",
+        suggested_summary: "料金に関する公式確認が必要な質問。",
+      },
+    });
+
+    await handleMessageClassify(
+      { repository, queues, llmClient: client },
+      { messageId: message.id },
+    );
+    const classification = [...state.classifications.values()][0];
+    expect(queues.jobs.map((job) => job.queueName)).toContain("auto_reply.decide");
+    expect(queues.jobs.map((job) => job.queueName)).toContain("ops.notify");
+
+    if (classification !== undefined) {
+      await handleAutoReplyDecide(
+        { repository, queues, llmClient: client },
+        { messageId: message.id, classificationId: classification.id },
+      );
+    }
+
+    expect([...state.autoReplies.values()][0]).toMatchObject({
+      status: "escalated",
+      sentMessageId: null,
+    });
+    expect(state.notifications.size).toBeGreaterThan(0);
+  });
+
   it("runs retention sweep at the start of each generation handler", async () => {
     const state = createPhase1State();
     const message = normalizeSampleRecord(

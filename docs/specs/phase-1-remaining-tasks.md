@@ -97,13 +97,17 @@ jobの可視化、E2Eに近い確認に移っている。
   sweep を実行する。
 - 専用queue、API、DB schema、ADRは追加しない。
 
-### 雑談への過剰反応と過剰ログ生成の抑制
+### 雑談への過剰反応と過剰ログ生成の抑制（完了）
 
-- `雑談`、`low`、`admin_action_needed=false` の投稿では、原則として `auto_reply.decide` と
-  `auto_replies` record を作らない。
-- 自動返信の許可ラベル外であることを理由にした `escalated`
-  record が、Dashboardの自動返信ログを埋めないようにする。
-- Discord実接続検証では、関係のない雑談がユーザー返信、admin-ops通知、自動返信ログのいずれも増やさないことを確認する。
+2026-05-21 に実装済み。
+
+- `雑談`、`low`、`admin_action_needed=false` の投稿では、`auto_reply.decide` と `auto_replies`
+  record を作らない。
+- 自動返信の許可ラベル外で、管理者対応不要、高重要度ではなく、固定エスカレーションラベルでもない投稿は、
+  `escalated` record を作らない。
+- `auto_reply.decide` handler 側にも同じguardを置き、既存・手動・retry由来のstale
+  jobでも自動返信ログを増やさない。
+- `公式回答待ち`、`炎上兆候`、`誤情報可能性`、`ルール違反候補`、高重要度、管理者対応が必要な投稿は、従来どおり通知または自動返信安全ゲートの対象として残す。
 
 ## P1: 運用品質
 

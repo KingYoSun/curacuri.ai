@@ -4,6 +4,7 @@ import {
   matchAutoReplyEscalationRule,
   sensitiveAutoReplyKeywords,
 } from "../auto-reply-rules.js";
+import { shouldCreateAutoReplyDecision } from "../auto-reply-eligibility.js";
 import { newId, nowIso } from "../ids.js";
 import {
   type AutoReply,
@@ -38,7 +39,7 @@ export type ClassificationLlmGeneration = {
 };
 
 export type AutoReplyLlmGeneration = {
-  readonly autoReply: AutoReply;
+  readonly autoReply: AutoReply | null;
   readonly run: LlmGenerationRun | null;
 };
 
@@ -206,6 +207,13 @@ export async function generateAutoReplyWithLlm(
   faqCandidates: readonly FaqCandidate[],
   client: LlmClient,
 ): Promise<AutoReplyLlmGeneration> {
+  if (!shouldCreateAutoReplyDecision(classification, autoReplyPolicy)) {
+    return {
+      autoReply: null,
+      run: null,
+    };
+  }
+
   const sourceRefs = sourceRefsForFaq(classification, faqCandidates);
   const preReason = preEscalationReason(message, classification, autoReplyPolicy, sourceRefs);
   if (preReason !== null) {

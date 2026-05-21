@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { activeWorkflowData } from "./active-data.js";
+import { shouldCreateAutoReplyDecision } from "./auto-reply-eligibility.js";
 import { matchAutoReplyEscalationRule } from "./auto-reply-rules.js";
 import { normalizeSampleRecord, parseSampleJsonl } from "./intake.js";
 import { createDefaultLlmClient, readLlmConfigFromEnv, type LlmClient } from "./llm/client.js";
@@ -106,6 +107,10 @@ export async function processMessage(
     state.notifications.set(notification.id, notification);
   }
 
+  if (!shouldCreateAutoReplyDecision(classification, state.autoReplyPolicy)) {
+    return;
+  }
+
   const { autoReply, run } = await generateAutoReplyWithLlm(
     message,
     classification,
@@ -114,6 +119,9 @@ export async function processMessage(
     client,
   );
   saveLlmRun(state, run);
+  if (autoReply === null) {
+    return;
+  }
   state.autoReplies.set(autoReply.id, autoReply);
   const matchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
     message,
@@ -272,7 +280,10 @@ export async function reprocessLlmTask(
     }
     for (const message of messages) {
       const classification = classificationsByMessage.get(message.id);
-      if (classification !== undefined) {
+      if (
+        classification !== undefined &&
+        shouldCreateAutoReplyDecision(classification, state.autoReplyPolicy)
+      ) {
         const { autoReply, run } = await generateAutoReplyWithLlm(
           message,
           classification,
@@ -281,7 +292,9 @@ export async function reprocessLlmTask(
           client,
         );
         saveLlmRun(state, run);
-        state.autoReplies.set(autoReply.id, autoReply);
+        if (autoReply !== null) {
+          state.autoReplies.set(autoReply.id, autoReply);
+        }
       }
     }
   }
