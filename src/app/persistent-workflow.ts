@@ -15,6 +15,7 @@ import {
 import { createAdminNotification, createAutoReplyEscalationNotification } from "./notifications.js";
 import { buildWeeklyReportMetrics } from "./report.js";
 import { sampleLogPath } from "./workflow.js";
+import { getLastCompletedWeekPeriod } from "../shared/report-period.js";
 import type { Phase1Repository } from "./repositories/types.js";
 import type {
   AdminFeedback,
@@ -342,7 +343,16 @@ export async function enqueueReprocess(
     await queues.add("faq.generate", {} satisfies FaqGeneratePayload);
   }
   if (scope === "all" || scope === "weekly_report") {
-    const [periodStart = "2026-01-01", periodEnd = "2026-01-07"] = (targetId ?? "").split(":");
+    const defaultPeriod = getLastCompletedWeekPeriod();
+    const [targetPeriodStart, targetPeriodEnd] = (targetId ?? "").split(":");
+    const periodStart =
+      targetPeriodStart === undefined || targetPeriodStart.length === 0
+        ? defaultPeriod.periodStart
+        : targetPeriodStart;
+    const periodEnd =
+      targetPeriodEnd === undefined || targetPeriodEnd.length === 0
+        ? defaultPeriod.periodEnd
+        : targetPeriodEnd;
     const settings = await repository.getSettings();
     await queues.add("report.weekly", {
       periodStart,
@@ -361,6 +371,9 @@ export async function approveAutoReplyInRepository(
   const reply = await repository.getAutoReply(autoReplyId);
   if (reply === null) {
     throw new Error(`auto reply not found: ${autoReplyId}`);
+  }
+  if (reply.status !== "pending_approval") {
+    throw new Error(`auto reply is not pending approval: ${autoReplyId}`);
   }
   const approved: AutoReply = {
     ...reply,
@@ -381,6 +394,9 @@ export async function rejectAutoReplyInRepository(
   const reply = await repository.getAutoReply(autoReplyId);
   if (reply === null) {
     throw new Error(`auto reply not found: ${autoReplyId}`);
+  }
+  if (reply.status !== "pending_approval") {
+    throw new Error(`auto reply is not pending approval: ${autoReplyId}`);
   }
   const rejected: AutoReply = {
     ...reply,

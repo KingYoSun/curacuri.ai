@@ -16,6 +16,7 @@ import {
 } from "../app/persistent-workflow.js";
 import type { AppRuntime } from "../app/runtime.js";
 import { syncSettingsWithAutoReplyPolicy } from "../app/settings.js";
+import { getLastCompletedWeekPeriod } from "../shared/report-period.js";
 import {
   autoReplyCategories,
   autoReplyModes,
@@ -343,18 +344,30 @@ export function createApiApp(runtime: AppRuntime) {
   );
 
   app.post("/api/auto-replies/:id/approve", async (context) => {
-    const reply = await approveAutoReplyInRepository(
-      runtime.repository,
-      runtime.queues,
-      context.req.param("id"),
-      "alpha-admin",
-    );
-    return context.json(reply);
+    try {
+      const reply = await approveAutoReplyInRepository(
+        runtime.repository,
+        runtime.queues,
+        context.req.param("id"),
+        "alpha-admin",
+      );
+      return context.json(reply);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "auto reply not found";
+      return context.json({ error: message }, message.includes("not found") ? 404 : 409);
+    }
   });
 
-  app.post("/api/auto-replies/:id/reject", async (context) =>
-    context.json(await rejectAutoReplyInRepository(runtime.repository, context.req.param("id"))),
-  );
+  app.post("/api/auto-replies/:id/reject", async (context) => {
+    try {
+      return context.json(
+        await rejectAutoReplyInRepository(runtime.repository, context.req.param("id")),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "auto reply not found";
+      return context.json({ error: message }, message.includes("not found") ? 404 : 409);
+    }
+  });
 
   app.post("/api/auto-replies/:id/feedback", async (context) => {
     const body = await requestBody(context.req.raw);
@@ -485,9 +498,10 @@ export function createApiApp(runtime: AppRuntime) {
     const body = await requestBody(context.req.raw);
     await sweepExpiredMessages(runtime.repository);
     const settings = await runtime.repository.getSettings();
+    const defaultPeriod = getLastCompletedWeekPeriod();
     const payload: ReportWeeklyPayload = {
-      periodStart: stringValue(body.periodStart, "2026-01-01"),
-      periodEnd: stringValue(body.periodEnd, "2026-01-07"),
+      periodStart: stringValue(body.periodStart, defaultPeriod.periodStart),
+      periodEnd: stringValue(body.periodEnd, defaultPeriod.periodEnd),
       channelIds: settings.targetChannelIds,
     };
     await runtime.queues.add("report.weekly", payload);

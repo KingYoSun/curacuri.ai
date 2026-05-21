@@ -15,6 +15,7 @@ import { createAdminNotification, createAutoReplyEscalationNotification } from "
 import { buildWeeklyReportMetrics } from "./report.js";
 import { listByCreatedAt, listByIngestedAt, type Phase1State } from "./store.js";
 import { newId, nowIso } from "./ids.js";
+import { getLastCompletedWeekPeriod } from "../shared/report-period.js";
 import {
   type AdminFeedback,
   type AutoReply,
@@ -304,7 +305,16 @@ export async function reprocessLlmTask(
   }
 
   if (scope === "all" || scope === "weekly_report") {
-    const [periodStart = "2026-01-01", periodEnd = "2026-01-07"] = (targetId ?? "").split(":");
+    const defaultPeriod = getLastCompletedWeekPeriod();
+    const [targetPeriodStart, targetPeriodEnd] = (targetId ?? "").split(":");
+    const periodStart =
+      targetPeriodStart === undefined || targetPeriodStart.length === 0
+        ? defaultPeriod.periodStart
+        : targetPeriodStart;
+    const periodEnd =
+      targetPeriodEnd === undefined || targetPeriodEnd.length === 0
+        ? defaultPeriod.periodEnd
+        : targetPeriodEnd;
     await generateWeeklyReport(state, periodStart, periodEnd, client);
   }
 }
@@ -353,6 +363,9 @@ export function approveAutoReply(
   if (reply === undefined) {
     throw new Error(`auto reply not found: ${autoReplyId}`);
   }
+  if (reply.status !== "pending_approval") {
+    throw new Error(`auto reply is not pending approval: ${autoReplyId}`);
+  }
   const approved: AutoReply = {
     ...reply,
     status: "sent",
@@ -372,6 +385,9 @@ export function rejectAutoReply(state: Phase1State, autoReplyId: string): AutoRe
   const reply = state.autoReplies.get(autoReplyId);
   if (reply === undefined) {
     throw new Error(`auto reply not found: ${autoReplyId}`);
+  }
+  if (reply.status !== "pending_approval") {
+    throw new Error(`auto reply is not pending approval: ${autoReplyId}`);
   }
   const rejected: AutoReply = {
     ...reply,

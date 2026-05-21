@@ -24,7 +24,6 @@ import {
   classificationLabels,
   escalationActions,
   escalationRuleTypes,
-  faqCandidateStatuses,
   importances,
   type EscalationRule,
   type EscalationRuleType,
@@ -32,6 +31,8 @@ import {
   type FaqCandidateStatus,
 } from "../shared/types.js";
 import { isNotificationSendClaim } from "../shared/notifications.js";
+import { getLastCompletedWeekPeriod } from "../shared/report-period.js";
+import { allowedFaqStatusTransitions, canModerateAutoReply } from "./action-rules.js";
 import { loadDashboardData, patchFaqCandidate, postFeedback, sendJson } from "./api.js";
 import {
   ConfirmAction,
@@ -66,8 +67,6 @@ import type {
   SettingsDraft,
 } from "./types.js";
 
-const DEFAULT_REPORT_START = "2026-05-11";
-const DEFAULT_REPORT_END = "2026-05-17";
 const INITIAL_LIMIT = 8;
 
 type ActionKey =
@@ -251,8 +250,7 @@ export function App() {
     Record<string, Pick<FaqCandidate, "draftAnswer" | "draftQuestion" | "topic">>
   >({});
   const [reportPeriod, setReportPeriod] = useState({
-    periodStart: DEFAULT_REPORT_START,
-    periodEnd: DEFAULT_REPORT_END,
+    ...getLastCompletedWeekPeriod(),
   });
   const [limits, setLimits] = useState({
     messages: INITIAL_LIMIT,
@@ -1415,22 +1413,20 @@ function FaqPanel(props: {
                   >
                     保存
                   </Button>
-                  {faqCandidateStatuses
-                    .filter((status) => status !== "candidate")
-                    .map((status) => (
-                      <ConfirmAction
-                        description={`このFAQ候補を「${faqStatusLabels[status]}」に変更し、フィードバックも記録します。`}
-                        disabled={props.pendingAction !== null}
-                        key={status}
-                        label={faqStatusLabels[status]}
-                        pending={props.pendingAction === "faq-feedback"}
-                        title="FAQ候補の状態を変更しますか？"
-                        variant={status === "rejected" ? "destructive" : "outline"}
-                        onConfirm={() => {
-                          props.onStatus(item, status);
-                        }}
-                      />
-                    ))}
+                  {allowedFaqStatusTransitions(item.status).map((status) => (
+                    <ConfirmAction
+                      description={`このFAQ候補を「${faqStatusLabels[status]}」に変更し、フィードバックも記録します。`}
+                      disabled={props.pendingAction !== null}
+                      key={status}
+                      label={faqStatusLabels[status]}
+                      pending={props.pendingAction === "faq-feedback"}
+                      title="FAQ候補の状態を変更しますか？"
+                      variant={status === "rejected" ? "destructive" : "outline"}
+                      onConfirm={() => {
+                        props.onStatus(item, status);
+                      }}
+                    />
+                  ))}
                 </div>
                 <FeedbackForm
                   disabled={props.pendingAction === "feedback"}
@@ -1479,6 +1475,7 @@ function AutoRepliesPanel(props: {
         ) : (
           shown.map((item) => {
             const path = `/api/auto-replies/${item.id}/feedback`;
+            const canModerate = canModerateAutoReply(item.status);
             return (
               <div className="grid gap-3 rounded-lg border p-3" key={item.id}>
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -1497,29 +1494,35 @@ function AutoRepliesPanel(props: {
                       {item.body.length > 0 ? item.body : item.decisionReason}
                     </p>
                   </div>
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <ConfirmAction
-                      description="この自動返信を承認し、送信キューへ投入します。"
-                      disabled={props.pendingAction !== null}
-                      label="承認"
-                      pending={props.pendingAction === "auto-reply-approve"}
-                      title="自動返信を承認しますか？"
-                      onConfirm={() => {
-                        props.onApprove(item.id);
-                      }}
-                    />
-                    <ConfirmAction
-                      description="この自動返信を却下し、送信しない状態にします。"
-                      disabled={props.pendingAction !== null}
-                      label="却下"
-                      pending={props.pendingAction === "auto-reply-reject"}
-                      title="自動返信を却下しますか？"
-                      variant="destructive"
-                      onConfirm={() => {
-                        props.onReject(item.id);
-                      }}
-                    />
-                  </div>
+                  {canModerate ? (
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <ConfirmAction
+                        description="この自動返信を承認し、送信キューへ投入します。"
+                        disabled={props.pendingAction !== null}
+                        label="承認"
+                        pending={props.pendingAction === "auto-reply-approve"}
+                        title="自動返信を承認しますか？"
+                        onConfirm={() => {
+                          props.onApprove(item.id);
+                        }}
+                      />
+                      <ConfirmAction
+                        description="この自動返信を却下し、送信しない状態にします。"
+                        disabled={props.pendingAction !== null}
+                        label="却下"
+                        pending={props.pendingAction === "auto-reply-reject"}
+                        title="自動返信を却下しますか？"
+                        variant="destructive"
+                        onConfirm={() => {
+                          props.onReject(item.id);
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      この状態では承認操作の対象外です。
+                    </p>
+                  )}
                 </div>
                 <FeedbackForm
                   disabled={props.pendingAction === "feedback"}
