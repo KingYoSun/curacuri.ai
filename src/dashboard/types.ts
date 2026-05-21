@@ -9,6 +9,9 @@ import type {
   FaqCandidate,
   GuildSettings,
   LlmGenerationRun,
+  ManualKnowledge,
+  ManualKnowledgeSourceType,
+  ManualKnowledgeStatus,
   Message,
   WeeklyReport,
 } from "../shared/types.js";
@@ -70,6 +73,7 @@ export type DashboardData = {
   readonly classifications: readonly Classification[];
   readonly notifications: readonly AdminNotification[];
   readonly faqCandidates: readonly FaqCandidate[];
+  readonly manualKnowledge: readonly ManualKnowledge[];
   readonly autoReplies: readonly AutoReply[];
   readonly weeklyReports: readonly WeeklyReport[];
   readonly llmStatus: LlmStatus;
@@ -103,6 +107,15 @@ export type EscalationRuleDraft = {
   readonly action: EscalationAction;
   readonly conditionValue: string;
   readonly createdAt?: string;
+};
+
+export type ManualKnowledgeDraft = {
+  readonly sourceType: ManualKnowledgeSourceType;
+  readonly title: string;
+  readonly body: string;
+  readonly url: string;
+  readonly tags: string;
+  readonly status: ManualKnowledgeStatus;
 };
 
 export type FeedbackDraft = {

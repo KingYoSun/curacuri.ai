@@ -8,6 +8,7 @@ import {
   type QueuePublisher,
 } from "../../src/app/persistent-workflow.js";
 import { normalizeSampleRecord } from "../../src/app/intake.js";
+import type { EmbeddingClient, EmbeddingResult } from "../../src/app/llm/embeddings.js";
 import type { LlmClient, LlmJsonRequest, LlmJsonResult } from "../../src/app/llm/client.js";
 import type { Phase1Repository } from "../../src/app/repositories/types.js";
 import { createPhase1State, type Phase1State } from "../../src/app/store.js";
@@ -21,6 +22,8 @@ import type {
   FaqCandidate,
   GuildSettings,
   LlmGenerationRun,
+  ManualKnowledge,
+  ManualKnowledgeSearchResult,
   Message,
   WeeklyReport,
 } from "../../src/shared/types.js";
@@ -46,6 +49,26 @@ class RecordingLlmClient implements LlmClient {
       modelName: this.modelName,
       rawText: JSON.stringify(rawJson),
       rawJson,
+    };
+  }
+}
+
+class RecordingEmbeddingClient implements EmbeddingClient {
+  readonly modelName = "recording-embedding";
+  readonly dimensions = 1536;
+  readonly inputs: string[] = [];
+
+  constructor(private readonly failure: Error | null = null) {}
+
+  async embed(input: string): Promise<EmbeddingResult> {
+    await Promise.resolve();
+    this.inputs.push(input);
+    if (this.failure !== null) {
+      throw this.failure;
+    }
+    return {
+      modelName: this.modelName,
+      embedding: Array.from({ length: this.dimensions }, () => 0.1),
     };
   }
 }
@@ -244,6 +267,56 @@ class MemoryRepository implements Phase1Repository {
     return Promise.resolve(candidate);
   }
 
+  listManualKnowledge(): Promise<readonly ManualKnowledge[]> {
+    return Promise.resolve([...this.state.manualKnowledge.values()]);
+  }
+
+  getManualKnowledge(id: string): Promise<ManualKnowledge | null> {
+    return Promise.resolve(this.state.manualKnowledge.get(id) ?? null);
+  }
+
+  createManualKnowledge(item: ManualKnowledge): Promise<ManualKnowledge> {
+    this.state.manualKnowledge.set(item.id, item);
+    return Promise.resolve(item);
+  }
+
+  updateManualKnowledge(item: ManualKnowledge): Promise<ManualKnowledge> {
+    this.state.manualKnowledge.set(item.id, item);
+    return Promise.resolve(item);
+  }
+
+  updateManualKnowledgeEmbedding(
+    id: string,
+    fields: {
+      readonly embeddingModel: string | null;
+      readonly embeddingUpdatedAt: string | null;
+      readonly embeddingError: string | null;
+      readonly updatedAt: string;
+    },
+  ): Promise<ManualKnowledge> {
+    const item = this.state.manualKnowledge.get(id);
+    if (item === undefined) {
+      return Promise.reject(new Error(`manual knowledge not found: ${id}`));
+    }
+    const updated = {
+      ...item,
+      embeddingModel: fields.embeddingModel,
+      embeddingUpdatedAt: fields.embeddingUpdatedAt,
+      embeddingError: fields.embeddingError,
+      updatedAt: fields.updatedAt,
+    };
+    this.state.manualKnowledge.set(id, updated);
+    return Promise.resolve(updated);
+  }
+
+  searchManualKnowledge(): Promise<readonly ManualKnowledgeSearchResult[]> {
+    return Promise.resolve(
+      [...this.state.manualKnowledge.values()]
+        .filter((item) => item.status === "published" && item.embeddingError === null)
+        .map((item) => ({ item, score: item.id.includes("low-score") ? 0.1 : 0.9 })),
+    );
+  }
+
   listWeeklyReports(): Promise<readonly WeeklyReport[]> {
     return Promise.resolve([...this.state.weeklyReports.values()]);
   }
@@ -369,6 +442,25 @@ function faqCandidateFor(message: Message): FaqCandidate {
   };
 }
 
+function manualKnowledgeFor(fields: Partial<ManualKnowledge> = {}): ManualKnowledge {
+  return {
+    id: "knowledge-1",
+    guildId: "dogfood-guild",
+    sourceType: "official_faq",
+    title: "Webhook設定",
+    body: "Webhook通知は設定画面の連携タブから変更できます。",
+    url: "https://example.com/docs/webhook",
+    tags: ["webhook"],
+    status: "published",
+    embeddingModel: "recording-embedding",
+    embeddingUpdatedAt: "2026-05-21T00:00:00.000Z",
+    embeddingError: null,
+    createdAt: "2026-05-21T00:00:00.000Z",
+    updatedAt: "2026-05-21T00:00:00.000Z",
+    ...fields,
+  };
+}
+
 function userPrompt(client: RecordingLlmClient, taskType: LlmJsonRequest["taskType"]): string {
   const request = client.requests.find((item) => item.taskType === taskType);
   const content = request?.messages.find((message) => message.role === "user")?.content;
@@ -452,6 +544,109 @@ describe("persistent workflow retention filtering", () => {
     expect([...state.llmGenerationRuns.values()].some((run) => run.taskType === "auto_reply")).toBe(
       false,
     );
+  });
+
+  it("uses published manual knowledge as faq_assist source refs", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "faq_assist",
+      allowedChannelIds: ["support"],
+      allowedCategories: ["faq_reference"],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    const classification = classificationFor(message);
+    state.messages.set(message.id, message);
+    state.classifications.set(classification.id, classification);
+    state.manualKnowledge.set("knowledge-1", manualKnowledgeFor());
+    const repository = new MemoryRepository(state);
+    const client = new RecordingLlmClient({
+      auto_reply: {
+        decision: "send",
+        reply_category: "faq_reference",
+        body: "Webhook通知は設定画面の連携タブから確認できます。",
+        source_ref_ids: ["knowledge-1"],
+        confidence: 0.91,
+        reason: "公式ナレッジに一致するため。",
+        escalation_reason: "none",
+      },
+    });
+    const embeddingClient = new RecordingEmbeddingClient();
+
+    await handleAutoReplyDecide(
+      { repository, queues: new MemoryQueue(), llmClient: client, embeddingClient },
+      { messageId: message.id, classificationId: classification.id },
+    );
+
+    expect(embeddingClient.inputs).toHaveLength(1);
+    expect([...state.autoReplies.values()][0]).toMatchObject({
+      status: "drafted",
+      replyCategory: "faq_reference",
+      sourceRefs: [
+        expect.objectContaining({
+          type: "manual_knowledge",
+          sourceId: "knowledge-1",
+          title: "Webhook設定",
+          score: 0.9,
+        }),
+      ],
+    });
+    expect(userPrompt(client, "auto_reply")).toContain("Webhook通知は設定画面");
+  });
+
+  it("does not use draft or failed-embedding manual knowledge for faq_assist", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "faq_assist",
+      allowedChannelIds: ["support"],
+      requireSourceForFaq: true,
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    const classification = classificationFor(message);
+    state.messages.set(message.id, message);
+    state.classifications.set(classification.id, classification);
+    state.manualKnowledge.set("draft-knowledge", manualKnowledgeFor({ status: "draft" }));
+    state.manualKnowledge.set(
+      "failed-knowledge",
+      manualKnowledgeFor({ id: "failed-knowledge", embeddingError: "embedding failed" }),
+    );
+    state.manualKnowledge.set(
+      "low-score-knowledge",
+      manualKnowledgeFor({ id: "low-score-knowledge", title: "関連しない案内" }),
+    );
+    const repository = new MemoryRepository(state);
+    const client = new RecordingLlmClient({});
+
+    await handleAutoReplyDecide(
+      {
+        repository,
+        queues: new MemoryQueue(),
+        llmClient: client,
+        embeddingClient: new RecordingEmbeddingClient(),
+      },
+      { messageId: message.id, classificationId: classification.id },
+    );
+
+    expect([...state.autoReplies.values()][0]).toMatchObject({
+      status: "escalated",
+      decisionReason: "FAQ補助に必要な参照元がありません。",
+    });
+    expect(client.requests).toEqual([]);
   });
 
   it("does not create escalated records for ordinary posts outside allowed labels", async () => {

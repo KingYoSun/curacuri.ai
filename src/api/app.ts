@@ -4,15 +4,18 @@ import { newId, nowIso } from "../app/ids.js";
 import { readLlmConfigFromEnv } from "../app/llm/client.js";
 import {
   approveAutoReplyInRepository,
+  createManualKnowledgeInRepository,
   dismissNotificationInRepository,
   enqueueReprocess,
   enqueueRetryRun,
   enqueueSampleLog,
   recordFeedbackInRepository,
+  reindexManualKnowledgeInRepository,
   rejectAutoReplyInRepository,
   sweepExpiredMessages,
   updateFaqCandidateInRepository,
   updateFaqCandidateStatusInRepository,
+  updateManualKnowledgeInRepository,
 } from "../app/persistent-workflow.js";
 import type { AppRuntime } from "../app/runtime.js";
 import { syncSettingsWithAutoReplyPolicy } from "../app/settings.js";
@@ -28,6 +31,8 @@ import {
   importances,
   llmRunStatuses,
   llmTaskTypes,
+  manualKnowledgeSourceTypes,
+  manualKnowledgeStatuses,
   type EscalationAction,
   type EscalationRule,
   type EscalationRuleType,
@@ -38,6 +43,8 @@ import {
   type FaqCandidateStatus,
   type LlmRunStatus,
   type LlmTaskType,
+  type ManualKnowledgeSourceType,
+  type ManualKnowledgeStatus,
 } from "../shared/types.js";
 import type { FaqGeneratePayload, ReportWeeklyPayload } from "../shared/queue.js";
 import type { MessageFilters } from "../app/repositories/types.js";
@@ -189,6 +196,39 @@ function faqCandidateStatusValue(value: unknown): FaqCandidateStatus | undefined
     return value as FaqCandidateStatus;
   }
   return undefined;
+}
+
+function manualKnowledgeSourceTypeValue(value: unknown): ManualKnowledgeSourceType | undefined {
+  if (
+    typeof value === "string" &&
+    manualKnowledgeSourceTypes.includes(value as ManualKnowledgeSourceType)
+  ) {
+    return value as ManualKnowledgeSourceType;
+  }
+  return undefined;
+}
+
+function manualKnowledgeStatusValue(value: unknown): ManualKnowledgeStatus | undefined {
+  if (
+    typeof value === "string" &&
+    manualKnowledgeStatuses.includes(value as ManualKnowledgeStatus)
+  ) {
+    return value as ManualKnowledgeStatus;
+  }
+  return undefined;
+}
+
+function trimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
+function nullableUrl(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
 }
 
 function modeValue(value: unknown, fallback: AutoReplyMode): AutoReplyMode {
@@ -495,6 +535,97 @@ export function createApiApp(runtime: AppRuntime) {
     };
     await runtime.queues.add("faq.generate", payload);
     return context.json({ ok: true, accepted: true }, 202);
+  });
+
+  app.get("/api/manual-knowledge", async (context) =>
+    context.json(await runtime.repository.listManualKnowledge()),
+  );
+
+  app.post("/api/manual-knowledge", async (context) => {
+    const body = await requestBody(context.req.raw);
+    const sourceType = manualKnowledgeSourceTypeValue(body.sourceType);
+    const status = body.status === undefined ? "draft" : manualKnowledgeStatusValue(body.status);
+    const title = trimmedString(body.title);
+    const knowledgeBody = trimmedString(body.body);
+    if (sourceType === undefined) {
+      return context.json({ error: "invalid manual knowledge source type" }, 400);
+    }
+    if (title === undefined || knowledgeBody === undefined) {
+      return context.json({ error: "title and body are required" }, 400);
+    }
+    if (status === undefined) {
+      return context.json({ error: "invalid manual knowledge status" }, 400);
+    }
+    return context.json(
+      await createManualKnowledgeInRepository(runtime.repository, runtime.embeddingClient, {
+        sourceType,
+        title,
+        body: knowledgeBody,
+        url: nullableUrl(body.url) ?? null,
+        tags: stringArray(body.tags, []),
+        status,
+      }),
+      201,
+    );
+  });
+
+  app.patch("/api/manual-knowledge/:id", async (context) => {
+    const body = await requestBody(context.req.raw);
+    const sourceType =
+      body.sourceType === undefined ? undefined : manualKnowledgeSourceTypeValue(body.sourceType);
+    const status = body.status === undefined ? undefined : manualKnowledgeStatusValue(body.status);
+    if (body.sourceType !== undefined && sourceType === undefined) {
+      return context.json({ error: "invalid manual knowledge source type" }, 400);
+    }
+    if (body.status !== undefined && status === undefined) {
+      return context.json({ error: "invalid manual knowledge status" }, 400);
+    }
+    if (body.title !== undefined && trimmedString(body.title) === undefined) {
+      return context.json({ error: "title must not be empty" }, 400);
+    }
+    if (body.body !== undefined && trimmedString(body.body) === undefined) {
+      return context.json({ error: "body must not be empty" }, 400);
+    }
+    const url = nullableUrl(body.url);
+    try {
+      return context.json(
+        await updateManualKnowledgeInRepository(
+          runtime.repository,
+          runtime.embeddingClient,
+          context.req.param("id"),
+          {
+            ...(sourceType === undefined ? {} : { sourceType }),
+            ...(typeof body.title === "string" ? { title: body.title.trim() } : {}),
+            ...(typeof body.body === "string" ? { body: body.body.trim() } : {}),
+            ...(url === undefined ? {} : { url }),
+            ...(Array.isArray(body.tags) ? { tags: stringArray(body.tags, []) } : {}),
+            ...(status === undefined ? {} : { status }),
+          },
+        ),
+      );
+    } catch (error) {
+      return context.json(
+        { error: error instanceof Error ? error.message : "manual knowledge not found" },
+        404,
+      );
+    }
+  });
+
+  app.post("/api/manual-knowledge/:id/reindex", async (context) => {
+    try {
+      return context.json(
+        await reindexManualKnowledgeInRepository(
+          runtime.repository,
+          runtime.embeddingClient,
+          context.req.param("id"),
+        ),
+      );
+    } catch (error) {
+      return context.json(
+        { error: error instanceof Error ? error.message : "manual knowledge not found" },
+        404,
+      );
+    }
   });
 
   app.post("/api/reports/weekly", async (context) => {

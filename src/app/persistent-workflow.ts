@@ -6,6 +6,7 @@ import { normalizeDiscordEvent, normalizeSampleRecord, parseSampleJsonl } from "
 import { matchAutoReplyEscalationRule } from "./auto-reply-rules.js";
 import { newId, nowIso } from "./ids.js";
 import { createDefaultLlmClient, type LlmClient } from "./llm/client.js";
+import type { EmbeddingClient } from "./llm/embeddings.js";
 import {
   generateAutoReplyWithLlm,
   generateClassificationWithLlm,
@@ -26,6 +27,10 @@ import type {
   FaqCandidateStatus,
   LlmGenerationRun,
   LlmTaskType,
+  ManualKnowledge,
+  ManualKnowledgeSourceType,
+  ManualKnowledgeStatus,
+  SourceRef,
 } from "../shared/types.js";
 import type {
   AutoReplyDecidePayload,
@@ -47,6 +52,7 @@ export type RepositoryWorkflow = {
   readonly repository: Phase1Repository;
   readonly queues: QueuePublisher;
   readonly llmClient?: LlmClient;
+  readonly embeddingClient?: EmbeddingClient;
 };
 
 function clientOrDefault(client: LlmClient | undefined): LlmClient {
@@ -100,6 +106,79 @@ function replaceFaqCandidatesForMessages(
   }
   for (const candidate of candidates) {
     existingCandidates.set(candidate.id, candidate);
+  }
+}
+
+function manualKnowledgeEmbeddingInput(
+  item: Pick<ManualKnowledge, "title" | "body" | "tags">,
+): string {
+  return [`タイトル: ${item.title}`, `タグ: ${item.tags.join(", ")}`, `本文: ${item.body}`].join(
+    "\n",
+  );
+}
+
+async function embeddingFieldsForManualKnowledge(
+  embeddingClient: EmbeddingClient,
+  item: Pick<ManualKnowledge, "title" | "body" | "tags">,
+): Promise<{
+  readonly embedding: readonly number[] | null;
+  readonly embeddingModel: string | null;
+  readonly embeddingUpdatedAt: string | null;
+  readonly embeddingError: string | null;
+}> {
+  try {
+    const result = await embeddingClient.embed(manualKnowledgeEmbeddingInput(item));
+    return {
+      embedding: result.embedding,
+      embeddingModel: result.modelName,
+      embeddingUpdatedAt: nowIso(),
+      embeddingError: null,
+    };
+  } catch (error) {
+    return {
+      embedding: null,
+      embeddingModel: embeddingClient.modelName,
+      embeddingUpdatedAt: null,
+      embeddingError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function manualKnowledgeExcerpt(body: string): string {
+  return body.length <= 240 ? body : `${body.slice(0, 240)}...`;
+}
+
+function sourceRefForManualKnowledge(result: {
+  readonly item: ManualKnowledge;
+  readonly score: number;
+}): SourceRef {
+  return {
+    type: "manual_knowledge",
+    sourceId: result.item.id,
+    sourceType: result.item.sourceType,
+    title: result.item.title,
+    ...(result.item.url === null ? {} : { url: result.item.url }),
+    excerpt: manualKnowledgeExcerpt(result.item.body),
+    score: result.score,
+  };
+}
+
+async function manualKnowledgeRefsForMessage(
+  context: RepositoryWorkflow,
+  content: string,
+): Promise<readonly SourceRef[]> {
+  if (context.embeddingClient === undefined) {
+    return [];
+  }
+  try {
+    const result = await context.embeddingClient.embed(content);
+    const matches = await context.repository.searchManualKnowledge(result.embedding, 6);
+    return matches
+      .filter((match) => match.score >= 0.25)
+      .slice(0, 3)
+      .map(sourceRefForManualKnowledge);
+  } catch {
+    return [];
   }
 }
 
@@ -227,12 +306,17 @@ export async function handleAutoReplyDecide(
   if (!shouldCreateAutoReplyDecision(classification, state.autoReplyPolicy)) {
     return;
   }
+  const manualKnowledgeRefs =
+    state.autoReplyPolicy.mode === "faq_assist"
+      ? await manualKnowledgeRefsForMessage(context, `${message.channelName}\n${message.content}`)
+      : [];
   const autoReplyResult = await generateAutoReplyWithLlm(
     message,
     classification,
     state.autoReplyPolicy,
     activeWorkflowData(state).faqCandidates,
     clientOrDefault(context.llmClient),
+    manualKnowledgeRefs,
   );
   saveLlmRun(state.llmGenerationRuns, autoReplyResult.run);
   if (autoReplyResult.autoReply === null) {
@@ -523,6 +607,93 @@ export async function updateFaqCandidateInRepository(
   return repository.updateFaqCandidate({
     ...candidate,
     ...patch,
+    updatedAt: nowIso(),
+  });
+}
+
+export async function createManualKnowledgeInRepository(
+  repository: Phase1Repository,
+  embeddingClient: EmbeddingClient,
+  fields: {
+    readonly sourceType: ManualKnowledgeSourceType;
+    readonly title: string;
+    readonly body: string;
+    readonly url: string | null;
+    readonly tags: readonly string[];
+    readonly status: ManualKnowledgeStatus;
+  },
+): Promise<ManualKnowledge> {
+  const settings = await repository.getSettings();
+  const timestamp = nowIso();
+  const embeddingFields = await embeddingFieldsForManualKnowledge(embeddingClient, fields);
+  const item: ManualKnowledge = {
+    id: newId(),
+    guildId: settings.guildId,
+    sourceType: fields.sourceType,
+    title: fields.title,
+    body: fields.body,
+    url: fields.url,
+    tags: fields.tags,
+    status: fields.status,
+    embeddingModel: embeddingFields.embeddingModel,
+    embeddingUpdatedAt: embeddingFields.embeddingUpdatedAt,
+    embeddingError: embeddingFields.embeddingError,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  return repository.createManualKnowledge(item, embeddingFields.embedding);
+}
+
+export async function updateManualKnowledgeInRepository(
+  repository: Phase1Repository,
+  embeddingClient: EmbeddingClient,
+  id: string,
+  patch: Partial<
+    Pick<ManualKnowledge, "sourceType" | "title" | "body" | "url" | "tags" | "status">
+  >,
+): Promise<ManualKnowledge> {
+  const current = await repository.getManualKnowledge(id);
+  if (current === null) {
+    throw new Error(`manual knowledge not found: ${id}`);
+  }
+  const next: ManualKnowledge = {
+    ...current,
+    ...patch,
+    updatedAt: nowIso(),
+  };
+  const shouldReindex =
+    patch.sourceType !== undefined ||
+    patch.title !== undefined ||
+    patch.body !== undefined ||
+    patch.tags !== undefined ||
+    (patch.status === "published" && current.status !== "published");
+  if (!shouldReindex) {
+    return repository.updateManualKnowledge(next, undefined);
+  }
+  const embeddingFields = await embeddingFieldsForManualKnowledge(embeddingClient, next);
+  return repository.updateManualKnowledge(
+    {
+      ...next,
+      embeddingModel: embeddingFields.embeddingModel,
+      embeddingUpdatedAt: embeddingFields.embeddingUpdatedAt,
+      embeddingError: embeddingFields.embeddingError,
+    },
+    embeddingFields.embedding,
+  );
+}
+
+export async function reindexManualKnowledgeInRepository(
+  repository: Phase1Repository,
+  embeddingClient: EmbeddingClient,
+  id: string,
+): Promise<ManualKnowledge> {
+  const current = await repository.getManualKnowledge(id);
+  if (current === null) {
+    throw new Error(`manual knowledge not found: ${id}`);
+  }
+  const embeddingFields = await embeddingFieldsForManualKnowledge(embeddingClient, current);
+  return repository.updateManualKnowledgeEmbedding(id, {
+    ...embeddingFields,
     updatedAt: nowIso(),
   });
 }

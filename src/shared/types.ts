@@ -114,6 +114,19 @@ export type CurrentAnswerStatus =
   | "needs_official_answer"
   | "existing_faq_possible";
 
+export const manualKnowledgeSourceTypes = [
+  "official_faq",
+  "docs",
+  "channel_guide",
+  "template_reply",
+] as const;
+
+export type ManualKnowledgeSourceType = (typeof manualKnowledgeSourceTypes)[number];
+
+export const manualKnowledgeStatuses = ["draft", "published", "archived"] as const;
+
+export type ManualKnowledgeStatus = (typeof manualKnowledgeStatuses)[number];
+
 export type WeeklyReportStatus = "generating" | "ready" | "failed";
 
 export const llmTaskTypes = [
@@ -236,9 +249,13 @@ export type EscalationRule = {
 };
 
 export type SourceRef = {
-  readonly type: "faq" | "docs" | "approved_faq_candidate";
+  readonly type: "faq" | "docs" | "approved_faq_candidate" | "manual_knowledge";
   readonly title: string;
   readonly url?: string;
+  readonly sourceId?: string;
+  readonly sourceType?: ManualKnowledgeSourceType;
+  readonly excerpt?: string;
+  readonly score?: number;
 };
 
 export type AutoReply = {
@@ -269,6 +286,27 @@ export type FaqCandidate = {
   readonly status: FaqCandidateStatus;
   readonly createdAt: string;
   readonly updatedAt: string;
+};
+
+export type ManualKnowledge = {
+  readonly id: string;
+  readonly guildId: string;
+  readonly sourceType: ManualKnowledgeSourceType;
+  readonly title: string;
+  readonly body: string;
+  readonly url: string | null;
+  readonly tags: readonly string[];
+  readonly status: ManualKnowledgeStatus;
+  readonly embeddingModel: string | null;
+  readonly embeddingUpdatedAt: string | null;
+  readonly embeddingError: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+
+export type ManualKnowledgeSearchResult = {
+  readonly item: ManualKnowledge;
+  readonly score: number;
 };
 
 export type WeeklyReportMetrics = {

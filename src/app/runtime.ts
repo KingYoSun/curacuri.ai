@@ -1,5 +1,6 @@
 import { createDefaultLlmClient } from "./llm/client.js";
 import type { LlmClient } from "./llm/client.js";
+import { createDefaultEmbeddingClient, type EmbeddingClient } from "./llm/embeddings.js";
 import { createQueueRuntime, type QueueRuntime } from "./queues.js";
 import { PostgresPhase1Repository } from "./repositories/postgres.js";
 import type { Phase1Repository } from "./repositories/types.js";
@@ -8,6 +9,7 @@ export type AppRuntime = {
   readonly repository: Phase1Repository;
   readonly queues: QueueRuntime;
   readonly llmClient: LlmClient;
+  readonly embeddingClient: EmbeddingClient;
 };
 
 function requiredEnv(name: string): string {
@@ -25,5 +27,6 @@ export async function createAppRuntime(): Promise<AppRuntime> {
     repository,
     queues: createQueueRuntime(requiredEnv("REDIS_URL")),
     llmClient: createDefaultLlmClient(),
+    embeddingClient: createDefaultEmbeddingClient(),
   };
 }

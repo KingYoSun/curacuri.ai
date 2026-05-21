@@ -21,6 +21,10 @@ import type {
   GuildSettings,
   Importance,
   LlmGenerationRun,
+  ManualKnowledge,
+  ManualKnowledgeSearchResult,
+  ManualKnowledgeSourceType,
+  ManualKnowledgeStatus,
   Message,
   MessageSource,
   NotificationStatus,
@@ -239,6 +243,28 @@ function mapFaq(row: DbRow): FaqCandidate {
   };
 }
 
+function mapManualKnowledge(row: DbRow): ManualKnowledge {
+  return {
+    id: text(row, "id"),
+    guildId: text(row, "guild_id"),
+    sourceType: text(row, "source_type") as ManualKnowledgeSourceType,
+    title: text(row, "title"),
+    body: text(row, "body"),
+    url: nullableText(row, "url"),
+    tags: textArray(row, "tags"),
+    status: text(row, "status") as ManualKnowledgeStatus,
+    embeddingModel: nullableText(row, "embedding_model"),
+    embeddingUpdatedAt: nullableText(row, "embedding_updated_at"),
+    embeddingError: nullableText(row, "embedding_error"),
+    createdAt: text(row, "created_at"),
+    updatedAt: text(row, "updated_at"),
+  };
+}
+
+function vectorLiteral(embedding: readonly number[]): string {
+  return `[${embedding.map((value) => String(value)).join(",")}]`;
+}
+
 function mapReport(row: DbRow): WeeklyReport {
   return {
     id: text(row, "id"),
@@ -355,6 +381,7 @@ export class PostgresPhase1Repository implements Phase1Repository {
     state.notifications.clear();
     state.autoReplies.clear();
     state.faqCandidates.clear();
+    state.manualKnowledge.clear();
     state.weeklyReports.clear();
     state.llmGenerationRuns.clear();
     state.feedback.clear();
@@ -363,6 +390,7 @@ export class PostgresPhase1Repository implements Phase1Repository {
     for (const item of await this.listNotifications()) state.notifications.set(item.id, item);
     for (const item of await this.listAutoReplies()) state.autoReplies.set(item.id, item);
     for (const item of await this.listFaqCandidates()) state.faqCandidates.set(item.id, item);
+    for (const item of await this.listManualKnowledge()) state.manualKnowledge.set(item.id, item);
     for (const item of await this.listWeeklyReports()) state.weeklyReports.set(item.id, item);
     for (const item of await this.listLlmRuns()) state.llmGenerationRuns.set(item.id, item);
     for (const item of await this.listFeedback()) state.feedback.set(item.id, item);
@@ -381,6 +409,8 @@ export class PostgresPhase1Repository implements Phase1Repository {
     for (const item of state.notifications.values()) await this.saveNotification(item);
     for (const item of state.autoReplies.values()) await this.saveAutoReply(item);
     for (const item of state.faqCandidates.values()) await this.saveFaqCandidate(item);
+    for (const item of state.manualKnowledge.values())
+      await this.updateManualKnowledge(item, undefined);
     for (const item of state.weeklyReports.values()) await this.saveWeeklyReport(item);
     for (const item of state.llmGenerationRuns.values()) await this.saveLlmRun(item);
     for (const item of state.feedback.values()) await this.saveFeedback(item);
@@ -836,6 +866,151 @@ export class PostgresPhase1Repository implements Phase1Repository {
         item.updatedAt,
       ],
     );
+  }
+
+  async listManualKnowledge(): Promise<readonly ManualKnowledge[]> {
+    const result = await this.#pool.query(
+      "SELECT * FROM manual_knowledge ORDER BY updated_at DESC, created_at DESC",
+    );
+    return rows(result).map(mapManualKnowledge);
+  }
+
+  async getManualKnowledge(id: string): Promise<ManualKnowledge | null> {
+    const result = await this.#pool.query("SELECT * FROM manual_knowledge WHERE id=$1", [id]);
+    const row = rows(result)[0];
+    return row === undefined ? null : mapManualKnowledge(row);
+  }
+
+  async createManualKnowledge(
+    item: ManualKnowledge,
+    embedding: readonly number[] | null,
+  ): Promise<ManualKnowledge> {
+    const result = await this.#pool.query(
+      `INSERT INTO manual_knowledge (
+        id, guild_id, source_type, title, body, url, tags, status, embedding,
+        embedding_model, embedding_updated_at, embedding_error, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::vector,$10,$11,$12,$13,$14)
+      RETURNING *`,
+      [
+        item.id,
+        item.guildId,
+        item.sourceType,
+        item.title,
+        item.body,
+        item.url,
+        item.tags,
+        item.status,
+        embedding === null ? null : vectorLiteral(embedding),
+        item.embeddingModel,
+        item.embeddingUpdatedAt,
+        item.embeddingError,
+        item.createdAt,
+        item.updatedAt,
+      ],
+    );
+    const row = rows(result)[0];
+    if (row === undefined) throw new Error("manual knowledge create failed");
+    return mapManualKnowledge(row);
+  }
+
+  async updateManualKnowledge(
+    item: ManualKnowledge,
+    embedding?: readonly number[] | null,
+  ): Promise<ManualKnowledge> {
+    const result =
+      embedding === undefined
+        ? await this.#pool.query(
+            `UPDATE manual_knowledge SET
+              source_type=$2, title=$3, body=$4, url=$5, tags=$6, status=$7,
+              embedding_model=$8, embedding_updated_at=$9, embedding_error=$10,
+              updated_at=$11
+            WHERE id=$1 RETURNING *`,
+            [
+              item.id,
+              item.sourceType,
+              item.title,
+              item.body,
+              item.url,
+              item.tags,
+              item.status,
+              item.embeddingModel,
+              item.embeddingUpdatedAt,
+              item.embeddingError,
+              item.updatedAt,
+            ],
+          )
+        : await this.#pool.query(
+            `UPDATE manual_knowledge SET
+              source_type=$2, title=$3, body=$4, url=$5, tags=$6, status=$7,
+              embedding=$8::vector, embedding_model=$9, embedding_updated_at=$10,
+              embedding_error=$11, updated_at=$12
+            WHERE id=$1 RETURNING *`,
+            [
+              item.id,
+              item.sourceType,
+              item.title,
+              item.body,
+              item.url,
+              item.tags,
+              item.status,
+              embedding === null ? null : vectorLiteral(embedding),
+              item.embeddingModel,
+              item.embeddingUpdatedAt,
+              item.embeddingError,
+              item.updatedAt,
+            ],
+          );
+    const row = rows(result)[0];
+    if (row === undefined) throw new Error(`manual knowledge not found: ${item.id}`);
+    return mapManualKnowledge(row);
+  }
+
+  async updateManualKnowledgeEmbedding(
+    id: string,
+    fields: {
+      readonly embedding: readonly number[] | null;
+      readonly embeddingModel: string | null;
+      readonly embeddingUpdatedAt: string | null;
+      readonly embeddingError: string | null;
+      readonly updatedAt: string;
+    },
+  ): Promise<ManualKnowledge> {
+    const result = await this.#pool.query(
+      `UPDATE manual_knowledge SET
+        embedding=$2::vector, embedding_model=$3, embedding_updated_at=$4,
+        embedding_error=$5, updated_at=$6
+      WHERE id=$1 RETURNING *`,
+      [
+        id,
+        fields.embedding === null ? null : vectorLiteral(fields.embedding),
+        fields.embeddingModel,
+        fields.embeddingUpdatedAt,
+        fields.embeddingError,
+        fields.updatedAt,
+      ],
+    );
+    const row = rows(result)[0];
+    if (row === undefined) throw new Error(`manual knowledge not found: ${id}`);
+    return mapManualKnowledge(row);
+  }
+
+  async searchManualKnowledge(
+    embedding: readonly number[],
+    limit: number,
+  ): Promise<readonly ManualKnowledgeSearchResult[]> {
+    const settings = await this.getSettings();
+    const result = await this.#pool.query(
+      `SELECT *, 1 - (embedding <=> $2::vector) AS score
+       FROM manual_knowledge
+       WHERE guild_id=$1 AND status='published' AND embedding IS NOT NULL
+       ORDER BY embedding <=> $2::vector
+       LIMIT $3`,
+      [settings.guildId, vectorLiteral(embedding), limit],
+    );
+    return rows(result).map((row) => ({
+      item: mapManualKnowledge(row),
+      score: numberValue(row, "score"),
+    }));
   }
 
   async listWeeklyReports(): Promise<readonly WeeklyReport[]> {

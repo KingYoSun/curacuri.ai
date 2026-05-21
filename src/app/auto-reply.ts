@@ -41,6 +41,7 @@ function categoryFor(
 function sourceRefsForFaq(
   classification: Classification,
   faqCandidates: readonly FaqCandidate[],
+  manualKnowledgeRefs: readonly SourceRef[] = [],
 ): readonly SourceRef[] {
   if (
     !classification.labels.some((label) =>
@@ -50,20 +51,17 @@ function sourceRefsForFaq(
     return [];
   }
 
-  const accepted = faqCandidates.find(
-    (candidate) => candidate.status === "accepted" || candidate.status === "candidate",
-  );
+  const accepted = faqCandidates.find((candidate) => candidate.status === "accepted");
 
-  if (accepted === undefined) {
-    return [];
+  const refs: SourceRef[] = [...manualKnowledgeRefs.slice(0, 3)];
+  if (accepted !== undefined && refs.length < 3) {
+    refs.push({
+      type: "approved_faq_candidate",
+      title: accepted.topic,
+    });
   }
 
-  return [
-    {
-      type: accepted.status === "accepted" ? "approved_faq_candidate" : "faq",
-      title: accepted.topic,
-    },
-  ];
+  return refs;
 }
 
 function escalationReason(
@@ -125,9 +123,12 @@ export function decideAutoReply(
   classification: Classification,
   policy: AutoReplyPolicy,
   faqCandidates: readonly FaqCandidate[],
+  manualKnowledgeRefs: readonly SourceRef[] = [],
 ): AutoReply {
   const sourceRefs =
-    policy.mode === "faq_assist" ? sourceRefsForFaq(classification, faqCandidates) : [];
+    policy.mode === "faq_assist"
+      ? sourceRefsForFaq(classification, faqCandidates, manualKnowledgeRefs)
+      : [];
   const category = categoryFor(message, classification, sourceRefs);
   const reason = escalationReason(message, classification, policy, category, sourceRefs);
   const createdAt = nowIso();

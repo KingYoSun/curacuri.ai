@@ -9,6 +9,8 @@ import type {
   FaqCandidate,
   GuildSettings,
   LlmGenerationRun,
+  ManualKnowledge,
+  ManualKnowledgeSearchResult,
   Message,
   WeeklyReport,
 } from "../../shared/types.js";
@@ -63,6 +65,30 @@ export type Phase1Repository = {
   getFaqCandidate(id: string): Promise<FaqCandidate | null>;
   updateFaqCandidateStatus(id: string, status: FaqCandidate["status"]): Promise<void>;
   updateFaqCandidate(candidate: FaqCandidate): Promise<FaqCandidate>;
+  listManualKnowledge(): Promise<readonly ManualKnowledge[]>;
+  getManualKnowledge(id: string): Promise<ManualKnowledge | null>;
+  createManualKnowledge(
+    item: ManualKnowledge,
+    embedding: readonly number[] | null,
+  ): Promise<ManualKnowledge>;
+  updateManualKnowledge(
+    item: ManualKnowledge,
+    embedding?: readonly number[] | null,
+  ): Promise<ManualKnowledge>;
+  updateManualKnowledgeEmbedding(
+    id: string,
+    fields: {
+      readonly embedding: readonly number[] | null;
+      readonly embeddingModel: string | null;
+      readonly embeddingUpdatedAt: string | null;
+      readonly embeddingError: string | null;
+      readonly updatedAt: string;
+    },
+  ): Promise<ManualKnowledge>;
+  searchManualKnowledge(
+    embedding: readonly number[],
+    limit: number,
+  ): Promise<readonly ManualKnowledgeSearchResult[]>;
   listWeeklyReports(): Promise<readonly WeeklyReport[]>;
   getWeeklyReport(id: string): Promise<WeeklyReport | null>;
   listLlmRuns(status?: LlmGenerationRun["status"]): Promise<readonly LlmGenerationRun[]>;

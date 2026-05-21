@@ -7,6 +7,8 @@ import type {
   FaqCandidate,
   FaqCandidateStatus,
   Importance,
+  ManualKnowledgeSourceType,
+  ManualKnowledgeStatus,
   WeeklyReport,
 } from "../shared/types.js";
 
@@ -77,6 +79,19 @@ export const weeklyReportStatusLabels: Record<WeeklyReport["status"], string> = 
   generating: "生成中",
   ready: "準備完了",
   failed: "失敗",
+};
+
+export const manualKnowledgeSourceTypeLabels: Record<ManualKnowledgeSourceType, string> = {
+  official_faq: "公式FAQ",
+  docs: "Docs",
+  channel_guide: "チャンネル案内",
+  template_reply: "定型回答",
+};
+
+export const manualKnowledgeStatusLabels: Record<ManualKnowledgeStatus, string> = {
+  draft: "下書き",
+  published: "公開",
+  archived: "アーカイブ",
 };
 
 export function confidenceLabel(value: number): string {

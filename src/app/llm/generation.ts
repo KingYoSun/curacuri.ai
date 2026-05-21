@@ -72,6 +72,7 @@ function safeAutoReplyCategory(
 function sourceRefsForFaq(
   classification: Classification,
   faqCandidates: readonly FaqCandidate[],
+  manualKnowledgeRefs: readonly SourceRef[],
 ): readonly SourceRef[] {
   if (
     !classification.labels.some((label) =>
@@ -81,14 +82,16 @@ function sourceRefsForFaq(
     return [];
   }
 
-  return faqCandidates
-    .filter((candidate) => candidate.status === "accepted" || candidate.status === "candidate")
-    .slice(0, 3)
+  const faqRefs = faqCandidates
+    .filter((candidate) => candidate.status === "accepted")
+    .slice(0, Math.max(0, 3 - manualKnowledgeRefs.length))
     .map((candidate) => ({
-      type: candidate.status === "accepted" ? "approved_faq_candidate" : "faq",
+      type: "approved_faq_candidate" as const,
       title: candidate.topic,
       url: candidate.id,
     }));
+
+  return [...manualKnowledgeRefs.slice(0, 3), ...faqRefs].slice(0, 3);
 }
 
 function preEscalationReason(
@@ -206,6 +209,7 @@ export async function generateAutoReplyWithLlm(
   autoReplyPolicy: AutoReplyPolicy,
   faqCandidates: readonly FaqCandidate[],
   client: LlmClient,
+  manualKnowledgeRefs: readonly SourceRef[] = [],
 ): Promise<AutoReplyLlmGeneration> {
   if (!shouldCreateAutoReplyDecision(classification, autoReplyPolicy)) {
     return {
@@ -214,7 +218,7 @@ export async function generateAutoReplyWithLlm(
     };
   }
 
-  const sourceRefs = sourceRefsForFaq(classification, faqCandidates);
+  const sourceRefs = sourceRefsForFaq(classification, faqCandidates, manualKnowledgeRefs);
   const preReason = preEscalationReason(message, classification, autoReplyPolicy, sourceRefs);
   if (preReason !== null) {
     return {

@@ -4,12 +4,19 @@ import { createApiApp } from "../../src/api/app.js";
 import type { Phase1Repository } from "../../src/app/repositories/types.js";
 import type { AppRuntime } from "../../src/app/runtime.js";
 import { createPhase1State } from "../../src/app/store.js";
+import { loadDashboardData } from "../../src/dashboard/api.js";
 import {
   allowedFaqStatusTransitions,
   canModerateAutoReply,
 } from "../../src/dashboard/action-rules.js";
 import type { QueueName, QueuePayload } from "../../src/shared/queue.js";
-import type { AdminNotification, AutoReply, FaqCandidate } from "../../src/shared/types.js";
+import type {
+  AdminNotification,
+  AutoReply,
+  FaqCandidate,
+  ManualKnowledge,
+  ManualKnowledgeSearchResult,
+} from "../../src/shared/types.js";
 
 function unsupportedPromise<T>(): Promise<T> {
   return Promise.reject(new Error("unsupported in this test"));
@@ -19,6 +26,8 @@ function createDashboardRuntime(seed: {
   readonly notification?: AdminNotification;
   readonly faqCandidate?: FaqCandidate;
   readonly autoReply?: AutoReply;
+  readonly manualKnowledge?: ManualKnowledge;
+  readonly embeddingFailure?: boolean;
 }): AppRuntime & {
   readonly enqueuedJobs: { readonly queueName: QueueName; readonly payload: QueuePayload }[];
 } {
@@ -32,6 +41,9 @@ function createDashboardRuntime(seed: {
   }
   if (seed.autoReply !== undefined) {
     state.autoReplies.set(seed.autoReply.id, seed.autoReply);
+  }
+  if (seed.manualKnowledge !== undefined) {
+    state.manualKnowledge.set(seed.manualKnowledge.id, seed.manualKnowledge);
   }
   const repository: Phase1Repository = {
     ensureSeed() {
@@ -153,6 +165,39 @@ function createDashboardRuntime(seed: {
       state.faqCandidates.set(candidate.id, candidate);
       return Promise.resolve(candidate);
     },
+    listManualKnowledge() {
+      return Promise.resolve([...state.manualKnowledge.values()]);
+    },
+    getManualKnowledge(id) {
+      return Promise.resolve(state.manualKnowledge.get(id) ?? null);
+    },
+    createManualKnowledge(item) {
+      state.manualKnowledge.set(item.id, item);
+      return Promise.resolve(item);
+    },
+    updateManualKnowledge(item) {
+      state.manualKnowledge.set(item.id, item);
+      return Promise.resolve(item);
+    },
+    updateManualKnowledgeEmbedding(id, fields) {
+      const item = state.manualKnowledge.get(id);
+      if (item === undefined) return Promise.reject(new Error(`manual knowledge not found: ${id}`));
+      const updated = {
+        ...item,
+        embeddingModel: fields.embeddingModel,
+        embeddingUpdatedAt: fields.embeddingUpdatedAt,
+        embeddingError: fields.embeddingError,
+        updatedAt: fields.updatedAt,
+      };
+      state.manualKnowledge.set(id, updated);
+      return Promise.resolve(updated);
+    },
+    searchManualKnowledge() {
+      const results: ManualKnowledgeSearchResult[] = [...state.manualKnowledge.values()]
+        .filter((item) => item.status === "published" && item.embeddingError === null)
+        .map((item) => ({ item, score: 0.9 }));
+      return Promise.resolve(results);
+    },
     listWeeklyReports() {
       return unsupportedPromise();
     },
@@ -189,6 +234,19 @@ function createDashboardRuntime(seed: {
       modelName: "test",
       generateJson() {
         return unsupportedPromise();
+      },
+    },
+    embeddingClient: {
+      modelName: "fake-embedding",
+      dimensions: 1536,
+      embed() {
+        if (seed.embeddingFailure === true) {
+          return Promise.reject(new Error("embedding failed"));
+        }
+        return Promise.resolve({
+          modelName: "fake-embedding",
+          embedding: Array.from({ length: 1536 }, () => 0.1),
+        });
       },
     },
     enqueuedJobs,
@@ -246,8 +304,27 @@ function autoReply(status: AutoReply["status"]): AutoReply {
   };
 }
 
+function manualKnowledge(status: ManualKnowledge["status"] = "published"): ManualKnowledge {
+  return {
+    id: "knowledge-1",
+    guildId: "dogfood-guild",
+    sourceType: "official_faq",
+    title: "Webhook設定",
+    body: "Webhook通知は設定画面の連携タブから変更できます。",
+    url: "https://example.com/docs/webhook",
+    tags: ["webhook"],
+    status,
+    embeddingModel: "fake-embedding",
+    embeddingUpdatedAt: "2026-05-21T00:00:00.000Z",
+    embeddingError: null,
+    createdAt: "2026-05-21T00:00:00.000Z",
+    updatedAt: "2026-05-21T00:00:00.000Z",
+  };
+}
+
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("dashboard action API", () => {
@@ -344,6 +421,103 @@ describe("dashboard action API", () => {
         },
       },
     ]);
+  });
+
+  it("creates, updates, lists, and reindexes manual knowledge", async () => {
+    const runtime = createDashboardRuntime({});
+    const app = createApiApp(runtime);
+    const createResponse = await app.request("/api/manual-knowledge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sourceType: "docs",
+        title: "Webhook設定",
+        body: "Webhook通知は設定画面の連携タブから変更できます。",
+        url: "https://example.com/docs/webhook",
+        tags: ["webhook", "通知"],
+        status: "draft",
+      }),
+    });
+    expect(createResponse.status).toBe(201);
+    const created = (await createResponse.json()) as ManualKnowledge;
+    expect(created).toMatchObject({
+      sourceType: "docs",
+      status: "draft",
+      embeddingModel: "fake-embedding",
+      embeddingError: null,
+    });
+
+    const updateResponse = await app.request(`/api/manual-knowledge/${created.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "published", sourceType: "official_faq" }),
+    });
+    expect(updateResponse.ok).toBe(true);
+    expect(await updateResponse.json()).toMatchObject({
+      id: created.id,
+      sourceType: "official_faq",
+      status: "published",
+    });
+
+    const reindexResponse = await app.request(`/api/manual-knowledge/${created.id}/reindex`, {
+      method: "POST",
+    });
+    expect(reindexResponse.ok).toBe(true);
+
+    const listResponse = await app.request("/api/manual-knowledge");
+    expect(await listResponse.json()).toMatchObject([
+      {
+        id: created.id,
+        title: "Webhook設定",
+        status: "published",
+      },
+    ]);
+  });
+
+  it("rejects invalid manual knowledge source type and status", async () => {
+    const app = createApiApp(createDashboardRuntime({}));
+    const invalidSourceResponse = await app.request("/api/manual-knowledge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sourceType: "memo",
+        title: "Webhook設定",
+        body: "本文",
+      }),
+    });
+    expect(invalidSourceResponse.status).toBe(400);
+
+    const invalidStatusResponse = await app.request("/api/manual-knowledge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sourceType: "docs",
+        title: "Webhook設定",
+        body: "本文",
+        status: "deleted",
+      }),
+    });
+    expect(invalidStatusResponse.status).toBe(400);
+  });
+
+  it("stores embedding errors on manual knowledge instead of rejecting the save", async () => {
+    const app = createApiApp(createDashboardRuntime({ embeddingFailure: true }));
+    const response = await app.request("/api/manual-knowledge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sourceType: "docs",
+        title: "Webhook設定",
+        body: "Webhook通知は設定画面の連携タブから変更できます。",
+        status: "published",
+      }),
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      embeddingModel: "fake-embedding",
+      embeddingUpdatedAt: null,
+      embeddingError: "embedding failed",
+    });
   });
 
   it("uses the last completed week when weekly report period body is omitted", async () => {
@@ -528,5 +702,66 @@ describe("dashboard action rules", () => {
       "rejected",
       "needs_review",
     ]);
+  });
+});
+
+describe("dashboard API client", () => {
+  it("loads manual knowledge with dashboard data", async () => {
+    const responses: Record<string, unknown> = {
+      "/api/settings": {
+        targetChannelIds: [],
+        excludedChannelIds: [],
+        adminNotificationChannelId: "admin",
+        retentionDays: 90,
+        characterName: "クラクリAI",
+        characterTone: "丁寧",
+      },
+      "/api/auto-reply/policy": {
+        enabled: false,
+        mode: "disabled",
+        allowedChannelIds: [],
+        allowedLabels: [],
+        allowedCategories: [],
+        minConfidence: 0.8,
+        requireSourceForFaq: true,
+        escalationRules: [],
+      },
+      "/api/messages": [],
+      "/api/classifications": [],
+      "/api/notifications": [],
+      "/api/faq-candidates": [],
+      "/api/manual-knowledge": [manualKnowledge()],
+      "/api/auto-replies": [],
+      "/api/reports/weekly": [],
+      "/api/llm/status": {
+        configured: true,
+        modelName: "test",
+        baseUrl: "https://example.com",
+        concurrency: 1,
+        responseFormat: "json_object",
+        failedCount: 0,
+      },
+      "/api/llm/runs?status=failed": [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((path: string) =>
+        Promise.resolve(
+          new Response(JSON.stringify(responses[path]), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        ),
+      ),
+    );
+
+    const data = await loadDashboardData({
+      periodStart: "",
+      periodEnd: "",
+      channelId: "",
+      label: "",
+    });
+
+    expect(data.manualKnowledge).toMatchObject([{ id: "knowledge-1", title: "Webhook設定" }]);
   });
 });

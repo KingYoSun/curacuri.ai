@@ -117,6 +117,24 @@ function createSettingsRuntime(): AppRuntime {
     updateFaqCandidate() {
       return unsupportedPromise();
     },
+    listManualKnowledge() {
+      return unsupportedPromise();
+    },
+    getManualKnowledge() {
+      return unsupportedPromise();
+    },
+    createManualKnowledge() {
+      return unsupportedPromise();
+    },
+    updateManualKnowledge() {
+      return unsupportedPromise();
+    },
+    updateManualKnowledgeEmbedding() {
+      return unsupportedPromise();
+    },
+    searchManualKnowledge() {
+      return unsupportedPromise();
+    },
     listWeeklyReports() {
       return unsupportedPromise();
     },
@@ -151,6 +169,13 @@ function createSettingsRuntime(): AppRuntime {
     llmClient: {
       modelName: "test",
       generateJson() {
+        return unsupportedPromise();
+      },
+    },
+    embeddingClient: {
+      modelName: "test-embedding",
+      dimensions: 1536,
+      embed() {
         return unsupportedPromise();
       },
     },

@@ -25,10 +25,13 @@ import {
   escalationActions,
   escalationRuleTypes,
   importances,
+  manualKnowledgeSourceTypes,
+  manualKnowledgeStatuses,
   type EscalationRule,
   type EscalationRuleType,
   type FaqCandidate,
   type FaqCandidateStatus,
+  type ManualKnowledge,
 } from "../shared/types.js";
 import { isNotificationSendClaim } from "../shared/notifications.js";
 import { getLastCompletedWeekPeriod } from "../shared/report-period.js";
@@ -55,6 +58,8 @@ import {
   faqPatchForStatus,
   faqStatusLabels,
   importanceLabels,
+  manualKnowledgeSourceTypeLabels,
+  manualKnowledgeStatusLabels,
   notificationStatusLabels,
   weeklyReportStatusLabels,
 } from "./labels.js";
@@ -62,6 +67,7 @@ import type {
   DashboardData,
   EscalationRuleDraft,
   FeedbackDraft,
+  ManualKnowledgeDraft,
   MessageFilters,
   PolicyDraft,
   SettingsDraft,
@@ -78,6 +84,9 @@ type ActionKey =
   | "filter"
   | "llm-reprocess"
   | "llm-retry"
+  | "manual-knowledge-create"
+  | "manual-knowledge-reindex"
+  | "manual-knowledge-save"
   | "notification-dismiss"
   | "report-generate"
   | "sample-import"
@@ -218,6 +227,39 @@ function policyDraftFromData(data: DashboardData["policy"]): PolicyDraft {
   };
 }
 
+function manualKnowledgeDraftFromItem(item: ManualKnowledge): ManualKnowledgeDraft {
+  return {
+    sourceType: item.sourceType,
+    title: item.title,
+    body: item.body,
+    url: item.url ?? "",
+    tags: lines(item.tags),
+    status: item.status,
+  };
+}
+
+function newManualKnowledgeDraft(): ManualKnowledgeDraft {
+  return {
+    sourceType: "official_faq",
+    title: "",
+    body: "",
+    url: "",
+    tags: "",
+    status: "draft",
+  };
+}
+
+function manualKnowledgePayloadFromDraft(draft: ManualKnowledgeDraft): Record<string, unknown> {
+  return {
+    sourceType: draft.sourceType,
+    title: draft.title,
+    body: draft.body,
+    url: draft.url.trim().length === 0 ? null : draft.url.trim(),
+    tags: parseLines(draft.tags),
+    status: draft.status,
+  };
+}
+
 function defaultFeedbackDraft(): FeedbackDraft {
   return { feedbackKind: "useful", note: "" };
 }
@@ -249,6 +291,11 @@ export function App() {
   const [faqDrafts, setFaqDrafts] = useState<
     Record<string, Pick<FaqCandidate, "draftAnswer" | "draftQuestion" | "topic">>
   >({});
+  const [manualKnowledgeDrafts, setManualKnowledgeDrafts] = useState<
+    Record<string, ManualKnowledgeDraft>
+  >({});
+  const [manualKnowledgeCreateDraft, setManualKnowledgeCreateDraft] =
+    useState<ManualKnowledgeDraft>(newManualKnowledgeDraft);
   const [reportPeriod, setReportPeriod] = useState({
     ...getLastCompletedWeekPeriod(),
   });
@@ -257,6 +304,7 @@ export function App() {
     classifications: INITIAL_LIMIT,
     notifications: INITIAL_LIMIT,
     faqCandidates: INITIAL_LIMIT,
+    manualKnowledge: INITIAL_LIMIT,
     autoReplies: INITIAL_LIMIT,
     failedRuns: INITIAL_LIMIT,
     weeklyReports: 4,
@@ -282,6 +330,13 @@ export function App() {
             draftQuestion: item.draftQuestion,
             draftAnswer: item.draftAnswer,
           };
+        }
+        return next;
+      });
+      setManualKnowledgeDrafts((current) => {
+        const next = { ...current };
+        for (const item of nextData.manualKnowledge) {
+          next[item.id] ??= manualKnowledgeDraftFromItem(item);
         }
         return next;
       });
@@ -342,6 +397,7 @@ export function App() {
       classifications: data?.classifications.length ?? 0,
       notifications: data?.notifications.length ?? 0,
       faqCandidates: data?.faqCandidates.length ?? 0,
+      manualKnowledge: data?.manualKnowledge.length ?? 0,
       autoReplies: data?.autoReplies.length ?? 0,
       weeklyReports: data?.weeklyReports.length ?? 0,
       failedRuns: data?.llmStatus.failedCount ?? 0,
@@ -416,11 +472,12 @@ export function App() {
         </Alert>
       )}
 
-      <section aria-label="運営メトリクス" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-7">
+      <section aria-label="運営メトリクス" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard label="投稿" value={metrics.messages} />
         <MetricCard label="分類" value={metrics.classifications} />
         <MetricCard label="通知" value={metrics.notifications} />
         <MetricCard label="FAQ候補" value={metrics.faqCandidates} />
+        <MetricCard label="公式ナレッジ" value={metrics.manualKnowledge} />
         <MetricCard label="自動返信" value={metrics.autoReplies} />
         <MetricCard label="週次レポート" value={metrics.weeklyReports} />
         <MetricCard
@@ -530,6 +587,7 @@ export function App() {
               <TabsTrigger value="classifications">分類</TabsTrigger>
               <TabsTrigger value="notifications">通知</TabsTrigger>
               <TabsTrigger value="faq">FAQ候補</TabsTrigger>
+              <TabsTrigger value="manualKnowledge">公式ナレッジ</TabsTrigger>
               <TabsTrigger value="autoReplies">自動返信</TabsTrigger>
               <TabsTrigger value="reports">週報</TabsTrigger>
             </TabsList>
@@ -626,6 +684,64 @@ export function App() {
                   setLimits((current) => ({
                     ...current,
                     faqCandidates: current.faqCandidates + INITIAL_LIMIT,
+                  }));
+                }}
+              />
+            </TabsContent>
+
+            <TabsContent value="manualKnowledge">
+              <ManualKnowledgePanel
+                createDraft={manualKnowledgeCreateDraft}
+                drafts={manualKnowledgeDrafts}
+                items={data.manualKnowledge}
+                limit={limits.manualKnowledge}
+                pendingAction={pendingAction}
+                onCreate={() =>
+                  void runAction(
+                    "manual-knowledge-create",
+                    "公式ナレッジを追加しました",
+                    async () => {
+                      await sendJson(
+                        "POST",
+                        "/api/manual-knowledge",
+                        manualKnowledgePayloadFromDraft(manualKnowledgeCreateDraft),
+                      );
+                      setManualKnowledgeCreateDraft(newManualKnowledgeDraft());
+                    },
+                  )
+                }
+                onCreateDraftChange={setManualKnowledgeCreateDraft}
+                onDraftChange={(id, draft) => {
+                  setManualKnowledgeDrafts((current) => ({ ...current, [id]: draft }));
+                }}
+                onReindex={(id) =>
+                  void runAction(
+                    "manual-knowledge-reindex",
+                    "公式ナレッジの再indexを実行しました",
+                    async () => {
+                      await sendJson("POST", `/api/manual-knowledge/${id}/reindex`, {});
+                    },
+                  )
+                }
+                onSave={(item) =>
+                  void runAction(
+                    "manual-knowledge-save",
+                    "公式ナレッジを保存しました",
+                    async () => {
+                      await sendJson(
+                        "PATCH",
+                        `/api/manual-knowledge/${item.id}`,
+                        manualKnowledgePayloadFromDraft(
+                          manualKnowledgeDrafts[item.id] ?? manualKnowledgeDraftFromItem(item),
+                        ),
+                      );
+                    },
+                  )
+                }
+                onShowMore={() => {
+                  setLimits((current) => ({
+                    ...current,
+                    manualKnowledge: current.manualKnowledge + INITIAL_LIMIT,
                   }));
                 }}
               />
@@ -1438,6 +1554,225 @@ function FaqPanel(props: {
                     props.onFeedbackSubmit(path);
                   }}
                 />
+              </div>
+            );
+          })
+        )}
+        <ShowMore shown={shown.length} total={props.items.length} onShowMore={props.onShowMore} />
+      </div>
+    </SectionCard>
+  );
+}
+
+function ManualKnowledgePanel(props: {
+  readonly items: DashboardData["manualKnowledge"];
+  readonly limit: number;
+  readonly drafts: Record<string, ManualKnowledgeDraft>;
+  readonly createDraft: ManualKnowledgeDraft;
+  readonly pendingAction: ActionKey | null;
+  readonly onCreateDraftChange: (draft: ManualKnowledgeDraft) => void;
+  readonly onDraftChange: (id: string, draft: ManualKnowledgeDraft) => void;
+  readonly onCreate: () => void;
+  readonly onSave: (item: ManualKnowledge) => void;
+  readonly onReindex: (id: string) => void;
+  readonly onShowMore: () => void;
+}) {
+  const shown = itemLimit(props.items, props.limit);
+  const sourceOptions = manualKnowledgeSourceTypes.map((sourceType) => ({
+    value: sourceType,
+    label: manualKnowledgeSourceTypeLabels[sourceType],
+  }));
+  const statusOptions = manualKnowledgeStatuses.map((status) => ({
+    value: status,
+    label: manualKnowledgeStatusLabels[status],
+  }));
+  return (
+    <SectionCard
+      action={<CountBadge shown={shown.length} total={props.items.length} />}
+      description="公式FAQ、Docs、チャンネル案内、定型回答を公式情報ソースとして管理します。"
+      title="公式ナレッジ"
+    >
+      <div className="grid gap-4">
+        <div className="grid gap-3 rounded-lg border p-3">
+          <div className="font-medium">新規追加</div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <SelectField
+              label="種別"
+              options={sourceOptions}
+              value={props.createDraft.sourceType}
+              onChange={(sourceType) => {
+                props.onCreateDraftChange({ ...props.createDraft, sourceType });
+              }}
+            />
+            <SelectField
+              label="状態"
+              options={statusOptions}
+              value={props.createDraft.status}
+              onChange={(status) => {
+                props.onCreateDraftChange({ ...props.createDraft, status });
+              }}
+            />
+          </div>
+          <TextField
+            label="タイトル"
+            value={props.createDraft.title}
+            onChange={(title) => {
+              props.onCreateDraftChange({ ...props.createDraft, title });
+            }}
+          />
+          <TextAreaField
+            label="本文"
+            value={props.createDraft.body}
+            onChange={(body) => {
+              props.onCreateDraftChange({ ...props.createDraft, body });
+            }}
+          />
+          <div className="grid gap-3 md:grid-cols-2">
+            <TextField
+              label="URL"
+              value={props.createDraft.url}
+              onChange={(url) => {
+                props.onCreateDraftChange({ ...props.createDraft, url });
+              }}
+            />
+            <TextAreaField
+              description="1行に1タグずつ入力します。"
+              label="タグ"
+              value={props.createDraft.tags}
+              onChange={(tags) => {
+                props.onCreateDraftChange({ ...props.createDraft, tags });
+              }}
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button
+              disabled={
+                props.pendingAction !== null ||
+                props.createDraft.title.trim().length === 0 ||
+                props.createDraft.body.trim().length === 0
+              }
+              size="sm"
+              onClick={props.onCreate}
+            >
+              {props.pendingAction === "manual-knowledge-create" ? (
+                <Loader2Icon className="animate-spin" />
+              ) : (
+                <PlusIcon />
+              )}
+              追加
+            </Button>
+          </div>
+        </div>
+
+        {props.items.length === 0 ? (
+          <EmptyList
+            description="公式ナレッジはまだありません。"
+            title="公式ナレッジはありません"
+          />
+        ) : (
+          shown.map((item) => {
+            const draft = props.drafts[item.id] ?? manualKnowledgeDraftFromItem(item);
+            return (
+              <div className="grid gap-3 rounded-lg border p-3" key={item.id}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={badgeVariantForStatus(item.status)}>
+                    {manualKnowledgeStatusLabels[item.status]}
+                  </Badge>
+                  <Badge variant="outline">
+                    {manualKnowledgeSourceTypeLabels[item.sourceType]}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {item.embeddingError === null
+                      ? item.embeddingUpdatedAt === null
+                        ? "embedding未生成"
+                        : `embedding更新 ${item.embeddingUpdatedAt.slice(0, 10)}`
+                      : `embedding失敗: ${item.embeddingError}`}
+                  </span>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <SelectField
+                    label="種別"
+                    options={sourceOptions}
+                    value={draft.sourceType}
+                    onChange={(sourceType) => {
+                      props.onDraftChange(item.id, { ...draft, sourceType });
+                    }}
+                  />
+                  <SelectField
+                    label="状態"
+                    options={statusOptions}
+                    value={draft.status}
+                    onChange={(status) => {
+                      props.onDraftChange(item.id, { ...draft, status });
+                    }}
+                  />
+                </div>
+                <TextField
+                  label="タイトル"
+                  value={draft.title}
+                  onChange={(title) => {
+                    props.onDraftChange(item.id, { ...draft, title });
+                  }}
+                />
+                <TextAreaField
+                  label="本文"
+                  value={draft.body}
+                  onChange={(body) => {
+                    props.onDraftChange(item.id, { ...draft, body });
+                  }}
+                />
+                <div className="grid gap-3 md:grid-cols-2">
+                  <TextField
+                    label="URL"
+                    value={draft.url}
+                    onChange={(url) => {
+                      props.onDraftChange(item.id, { ...draft, url });
+                    }}
+                  />
+                  <TextAreaField
+                    description="1行に1タグずつ入力します。"
+                    label="タグ"
+                    value={draft.tags}
+                    onChange={(tags) => {
+                      props.onDraftChange(item.id, { ...draft, tags });
+                    }}
+                  />
+                </div>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button
+                    disabled={
+                      props.pendingAction !== null ||
+                      draft.title.trim().length === 0 ||
+                      draft.body.trim().length === 0
+                    }
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      props.onReindex(item.id);
+                    }}
+                  >
+                    {props.pendingAction === "manual-knowledge-reindex" ? (
+                      <Loader2Icon className="animate-spin" />
+                    ) : null}
+                    再index
+                  </Button>
+                  <Button
+                    disabled={
+                      props.pendingAction !== null ||
+                      draft.title.trim().length === 0 ||
+                      draft.body.trim().length === 0
+                    }
+                    size="sm"
+                    onClick={() => {
+                      props.onSave(item);
+                    }}
+                  >
+                    {props.pendingAction === "manual-knowledge-save" ? (
+                      <Loader2Icon className="animate-spin" />
+                    ) : null}
+                    保存
+                  </Button>
+                </div>
               </div>
             );
           })

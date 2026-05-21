@@ -9,7 +9,7 @@ Discord サーバー内の質問、要望、不満、バグ報告、盛り上が
 このリポジトリは、Codex 中心の開発ハーネスと Phase 1 Dogfood Alpha の縦断実装を含みます。
 
 Phase 1 では、PostgreSQL永続化、BullMQ
-queue、サンプルログ取り込み、投稿分類、重要通知候補、FAQ候補、限定自動返信判定、dry-run既定のDiscord送信、週次レポート、管理者フィードバック、Alpha管理画面の運用動線を実装しています。
+queue、サンプルログ取り込み、投稿分類、重要通知候補、FAQ候補、公式ナレッジ、限定自動返信判定、dry-run既定のDiscord送信、週次レポート、管理者フィードバック、Alpha管理画面の運用動線を実装しています。
 
 ## 技術方針
 
@@ -70,6 +70,20 @@ LLM_RESPONSE_FORMAT=json_object
 
 `LLM_API_KEY` または `LLM_MODEL`
 が未設定の場合、分類、返信案、FAQ候補、週次レポート生成は失敗runとして記録されます。Dashboard のLLM失敗一覧から個別再実行または一括再実行できます。
+
+公式ナレッジのRAG検索ではOpenAI CompatibleなEmbeddings APIを使います。未設定の場合、
+`EMBEDDING_API_KEY` と `EMBEDDING_BASE_URL` は `LLM_API_KEY` / `LLM_BASE_URL` にfallbackします。
+
+```sh
+EMBEDDING_API_KEY=...
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_DIMENSIONS=1536
+```
+
+既存のDocker Compose環境は `pgvector/pgvector:pg16` を使います。既存DB volumeには新しい
+`db/migrations/0003_manual_knowledge_rag.sql`
+が自動適用されないため、必要に応じて手動適用またはvolume再作成を行います。
 
 Discord 送信は `DISCORD_DRY_RUN=true` が既定です。この状態ではDiscord
 APIを呼ばず、DB上だけで送信済みとして記録します。実送信する場合だけ `DISCORD_TOKEN` と
