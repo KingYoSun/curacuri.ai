@@ -645,6 +645,122 @@ describe("persistent workflow retention filtering", () => {
     ]);
   });
 
+  it("uses faq.generate messageIds to scope FAQ generation input", async () => {
+    const state = createPhase1State();
+    const targetMessage = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    const otherMessage = normalizeSampleRecord(
+      {
+        text: "料金設定について雑談しています。",
+        channel_context: "#general / 雑談",
+      },
+      1,
+    );
+    state.messages.set(targetMessage.id, targetMessage);
+    state.messages.set(otherMessage.id, otherMessage);
+    state.classifications.set("target-classification", classificationFor(targetMessage));
+    state.classifications.set("other-classification", classificationFor(otherMessage));
+    const repository = new MemoryRepository(state);
+    const client = new RecordingLlmClient({
+      faq_candidates: {
+        candidates: [
+          {
+            source_message_ids: [targetMessage.id],
+            topic: "Webhook設定",
+            current_answer_status: "existing_faq_possible",
+            draft_question: "Webhook設定はどこで確認できますか？",
+            draft_answer: "この回答文案は公式回答ではありません。",
+            confidence: 0.82,
+            status: "candidate",
+          },
+        ],
+      },
+    });
+
+    await handleFaqGenerate(
+      { repository, queues: new MemoryQueue(), llmClient: client },
+      { messageIds: [targetMessage.id] },
+    );
+
+    const prompt = userPrompt(client, "faq_candidates");
+    expect(prompt).toContain(targetMessage.id);
+    expect(prompt).not.toContain(otherMessage.id);
+    expect([...state.faqCandidates.values()]).toEqual([
+      expect.objectContaining({ sourceMessageIds: [targetMessage.id] }),
+    ]);
+  });
+
+  it("uses faq.generate period filters and preserves out-of-scope FAQ candidates", async () => {
+    const state = createPhase1State();
+    const inPeriodMessage = {
+      ...normalizeSampleRecord(
+        {
+          text: "Webhook通知の設定ってどこからできますか？",
+          channel_context: "#support / 使い方質問",
+        },
+        0,
+      ),
+      postedAt: "2026-01-03T12:00:00.000Z",
+    };
+    const outOfPeriodMessage = {
+      ...normalizeSampleRecord(
+        {
+          text: "管理画面の通知設定を確認したいです。",
+          channel_context: "#support / 使い方質問",
+        },
+        1,
+      ),
+      postedAt: "2026-01-10T12:00:00.000Z",
+    };
+    state.messages.set(inPeriodMessage.id, inPeriodMessage);
+    state.messages.set(outOfPeriodMessage.id, outOfPeriodMessage);
+    state.classifications.set("in-period-classification", classificationFor(inPeriodMessage));
+    state.classifications.set(
+      "out-of-period-classification",
+      classificationFor(outOfPeriodMessage),
+    );
+    state.faqCandidates.set(`faq-${inPeriodMessage.id}`, faqCandidateFor(inPeriodMessage));
+    state.faqCandidates.set(`faq-${outOfPeriodMessage.id}`, faqCandidateFor(outOfPeriodMessage));
+    const repository = new MemoryRepository(state);
+    const client = new RecordingLlmClient({
+      faq_candidates: {
+        candidates: [
+          {
+            source_message_ids: [inPeriodMessage.id],
+            topic: "Webhook設定の確認",
+            current_answer_status: "existing_faq_possible",
+            draft_question: "Webhook設定はどこで確認できますか？",
+            draft_answer: "この回答文案は公式回答ではありません。",
+            confidence: 0.82,
+            status: "candidate",
+          },
+        ],
+      },
+    });
+
+    await handleFaqGenerate(
+      { repository, queues: new MemoryQueue(), llmClient: client },
+      { periodStart: "2026-01-01", periodEnd: "2026-01-07" },
+    );
+
+    const prompt = userPrompt(client, "faq_candidates");
+    expect(prompt).toContain(inPeriodMessage.id);
+    expect(prompt).not.toContain(outOfPeriodMessage.id);
+    expect(state.faqCandidates.has(`faq-${inPeriodMessage.id}`)).toBe(false);
+    expect(state.faqCandidates.has(`faq-${outOfPeriodMessage.id}`)).toBe(true);
+    expect([...state.faqCandidates.values()]).toContainEqual(
+      expect.objectContaining({
+        sourceMessageIds: [inPeriodMessage.id],
+        topic: "Webhook設定の確認",
+      }),
+    );
+  });
+
   it("excludes deleted message derived data from report metrics", async () => {
     const state = createPhase1State();
     const activeMessage = normalizeSampleRecord(
@@ -698,5 +814,76 @@ describe("persistent workflow retention filtering", () => {
     });
     expect(weeklyPrompt).toContain(activeMessage.id);
     expect(weeklyPrompt).not.toContain(deletedMessage.id);
+  });
+
+  it("uses report.weekly channelIds for report inputs, metrics, and metadata", async () => {
+    const state = createPhase1State();
+    const supportMessage = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    const bugsMessage = normalizeSampleRecord(
+      {
+        text: "ログイン時に500エラーになります。",
+        channel_context: "#bugs / 不具合報告",
+      },
+      1,
+    );
+    const supportClassification = classificationFor(supportMessage, {
+      id: "support-classification",
+      labels: ["未回答質問"],
+    });
+    const bugsClassification = classificationFor(bugsMessage, {
+      id: "bugs-classification",
+      labels: ["バグ報告"],
+    });
+    state.messages.set(supportMessage.id, supportMessage);
+    state.messages.set(bugsMessage.id, bugsMessage);
+    state.classifications.set(supportClassification.id, supportClassification);
+    state.classifications.set(bugsClassification.id, bugsClassification);
+    state.autoReplies.set("support-reply", autoReplyFor(supportMessage, supportClassification));
+    state.autoReplies.set("bugs-reply", autoReplyFor(bugsMessage, bugsClassification));
+    state.faqCandidates.set("support-faq", faqCandidateFor(supportMessage));
+    state.faqCandidates.set("bugs-faq", faqCandidateFor(bugsMessage));
+    const repository = new MemoryRepository(state);
+    const client = new RecordingLlmClient({
+      faq_candidates: {
+        candidates: [
+          {
+            source_message_ids: [supportMessage.id],
+            topic: "Webhook設定",
+            current_answer_status: "existing_faq_possible",
+            draft_question: "Webhook設定はどこで確認できますか？",
+            draft_answer: "この回答文案は公式回答ではありません。",
+            confidence: 0.82,
+            status: "candidate",
+          },
+        ],
+      },
+    });
+
+    await handleReportWeekly(
+      { repository, queues: new MemoryQueue(), llmClient: client },
+      { periodStart: "2026-01-01", periodEnd: "2026-01-07", channelIds: ["support"] },
+    );
+
+    const report = [...state.weeklyReports.values()][0];
+    const weeklyPrompt = userPrompt(client, "weekly_report");
+    expect(report).toMatchObject({
+      targetChannelIds: ["support"],
+      messageCount: 1,
+      metrics: {
+        unansweredQuestionCount: 1,
+        bugReportCount: 0,
+        faqCandidateCount: 1,
+        autoReplySentCount: 1,
+      },
+    });
+    expect(weeklyPrompt).toContain(supportMessage.id);
+    expect(weeklyPrompt).not.toContain(bugsMessage.id);
+    expect(weeklyPrompt).toContain("対象チャンネル:\nsupport");
   });
 });

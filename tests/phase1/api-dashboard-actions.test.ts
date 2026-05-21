@@ -321,6 +321,31 @@ describe("dashboard action API", () => {
     expect(await listResponse.json()).toMatchObject([{ id: "faq-1", status: "accepted" }]);
   });
 
+  it("passes FAQ generation filters to the queue payload", async () => {
+    const runtime = createDashboardRuntime({});
+    const app = createApiApp(runtime);
+    const response = await app.request("/api/faq-candidates/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messageIds: ["message-1", "message-2"],
+        periodStart: "2026-01-01",
+        periodEnd: "2026-01-07",
+      }),
+    });
+    expect(response.status).toBe(202);
+    expect(runtime.enqueuedJobs).toEqual([
+      {
+        queueName: "faq.generate",
+        payload: {
+          messageIds: ["message-1", "message-2"],
+          periodStart: "2026-01-01",
+          periodEnd: "2026-01-07",
+        },
+      },
+    ]);
+  });
+
   it("uses the last completed week when weekly report period body is omitted", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-21T12:00:00.000Z"));

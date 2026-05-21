@@ -8,8 +8,50 @@ export type ActiveWorkflowData = {
   readonly autoReplies: readonly AutoReply[];
 };
 
+export type ActiveWorkflowFilters = {
+  readonly messageIds?: readonly string[];
+  readonly periodStart?: string;
+  readonly periodEnd?: string;
+  readonly channelIds?: readonly string[];
+};
+
+function nonEmptyString(value: string | undefined): string | undefined {
+  return value === undefined || value.length === 0 ? undefined : value;
+}
+
+function matchesMessageFilters(message: Message, filters: ActiveWorkflowFilters): boolean {
+  const messageIds = filters.messageIds === undefined ? undefined : new Set(filters.messageIds);
+  if (messageIds !== undefined && !messageIds.has(message.id)) {
+    return false;
+  }
+
+  const channelIds = filters.channelIds === undefined ? undefined : new Set(filters.channelIds);
+  if (channelIds !== undefined && !channelIds.has(message.channelId)) {
+    return false;
+  }
+
+  const periodStart = nonEmptyString(filters.periodStart);
+  const periodEnd = nonEmptyString(filters.periodEnd);
+  const postedDate = message.postedAt.slice(0, 10);
+  if (periodStart !== undefined && postedDate < periodStart) {
+    return false;
+  }
+  if (periodEnd !== undefined && postedDate > periodEnd) {
+    return false;
+  }
+
+  return true;
+}
+
 export function activeMessages(messages: Iterable<Message>): readonly Message[] {
   return [...messages].filter((message) => message.deletedAt === null);
+}
+
+export function filteredActiveMessages(
+  messages: Iterable<Message>,
+  filters: ActiveWorkflowFilters = {},
+): readonly Message[] {
+  return activeMessages(messages).filter((message) => matchesMessageFilters(message, filters));
 }
 
 export function activeClassifications(
@@ -49,8 +91,11 @@ export function activeAutoReplies(
   );
 }
 
-export function activeWorkflowData(state: Phase1State): ActiveWorkflowData {
-  const messages = activeMessages(state.messages.values());
+export function activeWorkflowData(
+  state: Phase1State,
+  filters: ActiveWorkflowFilters = {},
+): ActiveWorkflowData {
+  const messages = filteredActiveMessages(state.messages.values(), filters);
   const classifications = activeClassifications(state.classifications.values(), messages);
   return {
     messages,

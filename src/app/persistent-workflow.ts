@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { activeWorkflowData } from "./active-data.js";
+import { activeWorkflowData, type ActiveWorkflowFilters } from "./active-data.js";
 import { shouldCreateAutoReplyDecision } from "./auto-reply-eligibility.js";
 import { normalizeDiscordEvent, normalizeSampleRecord, parseSampleJsonl } from "./intake.js";
 import { matchAutoReplyEscalationRule } from "./auto-reply-rules.js";
@@ -56,6 +56,50 @@ function clientOrDefault(client: LlmClient | undefined): LlmClient {
 function saveLlmRun(runMap: Map<string, LlmGenerationRun>, run: LlmGenerationRun | null): void {
   if (run !== null) {
     runMap.set(run.id, run);
+  }
+}
+
+function hasFaqGenerateFilters(payload: FaqGeneratePayload): boolean {
+  return (
+    payload.messageIds !== undefined ||
+    (payload.periodStart !== undefined && payload.periodStart.length > 0) ||
+    (payload.periodEnd !== undefined && payload.periodEnd.length > 0)
+  );
+}
+
+function faqFilters(payload: FaqGeneratePayload): ActiveWorkflowFilters {
+  return {
+    ...(payload.messageIds === undefined ? {} : { messageIds: payload.messageIds }),
+    ...(payload.periodStart === undefined || payload.periodStart.length === 0
+      ? {}
+      : { periodStart: payload.periodStart }),
+    ...(payload.periodEnd === undefined || payload.periodEnd.length === 0
+      ? {}
+      : { periodEnd: payload.periodEnd }),
+  };
+}
+
+function reportFilters(payload: ReportWeeklyPayload): ActiveWorkflowFilters {
+  return {
+    periodStart: payload.periodStart,
+    periodEnd: payload.periodEnd,
+    channelIds: payload.channelIds,
+  };
+}
+
+function replaceFaqCandidatesForMessages(
+  existingCandidates: Map<string, FaqCandidate>,
+  targetMessageIds: readonly string[],
+  candidates: readonly FaqCandidate[],
+): void {
+  const targetIds = new Set(targetMessageIds);
+  for (const [id, candidate] of existingCandidates) {
+    if (candidate.sourceMessageIds.some((messageId) => targetIds.has(messageId))) {
+      existingCandidates.delete(id);
+    }
+  }
+  for (const candidate of candidates) {
+    existingCandidates.set(candidate.id, candidate);
   }
 }
 
@@ -232,12 +276,11 @@ export async function handleAutoReplyDecide(
 
 export async function handleFaqGenerate(
   context: RepositoryWorkflow,
-  _payload: FaqGeneratePayload = {},
+  payload: FaqGeneratePayload = {},
 ): Promise<void> {
-  void _payload;
   await sweepExpiredMessages(context.repository);
   const state = await context.repository.loadState();
-  const active = activeWorkflowData(state);
+  const active = activeWorkflowData(state, faqFilters(payload));
   const { candidates, run } = await generateFaqCandidatesWithLlm(
     active.messages,
     active.classifications,
@@ -245,9 +288,17 @@ export async function handleFaqGenerate(
   );
   saveLlmRun(state.llmGenerationRuns, run);
   if (candidates !== null) {
-    state.faqCandidates.clear();
-    for (const candidate of candidates) {
-      state.faqCandidates.set(candidate.id, candidate);
+    if (hasFaqGenerateFilters(payload)) {
+      replaceFaqCandidatesForMessages(
+        state.faqCandidates,
+        active.messages.map((message) => message.id),
+        candidates,
+      );
+    } else {
+      state.faqCandidates.clear();
+      for (const candidate of candidates) {
+        state.faqCandidates.set(candidate.id, candidate);
+      }
     }
   }
   await context.repository.saveState(state);
@@ -259,7 +310,8 @@ export async function handleReportWeekly(
 ): Promise<void> {
   await sweepExpiredMessages(context.repository);
   const state = await context.repository.loadState();
-  const activeBeforeFaq = activeWorkflowData(state);
+  const filters = reportFilters(payload);
+  const activeBeforeFaq = activeWorkflowData(state, filters);
   const faqGeneration = await generateFaqCandidatesWithLlm(
     activeBeforeFaq.messages,
     activeBeforeFaq.classifications,
@@ -267,19 +319,24 @@ export async function handleReportWeekly(
   );
   saveLlmRun(state.llmGenerationRuns, faqGeneration.run);
   if (faqGeneration.candidates !== null) {
-    state.faqCandidates.clear();
-    for (const candidate of faqGeneration.candidates) {
-      state.faqCandidates.set(candidate.id, candidate);
-    }
+    replaceFaqCandidatesForMessages(
+      state.faqCandidates,
+      activeBeforeFaq.messages.map((message) => message.id),
+      faqGeneration.candidates,
+    );
   }
-  const active = activeWorkflowData(state);
+  const active = activeWorkflowData(state, filters);
   const metrics = buildWeeklyReportMetrics(
     active.classifications,
     active.faqCandidates,
     active.autoReplies,
   );
+  const reportSettings = {
+    ...state.settings,
+    targetChannelIds: payload.channelIds,
+  };
   const { report, run } = await generateWeeklyReportWithLlm(clientOrDefault(context.llmClient), {
-    settings: state.settings,
+    settings: reportSettings,
     messages: active.messages,
     classifications: active.classifications,
     faqCandidates: active.faqCandidates,

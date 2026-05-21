@@ -487,8 +487,11 @@ export function createApiApp(runtime: AppRuntime) {
   app.post("/api/faq-candidates/generate", async (context) => {
     const body = await requestBody(context.req.raw);
     const payload: FaqGeneratePayload = {
-      periodStart: stringValue(body.periodStart, ""),
-      periodEnd: stringValue(body.periodEnd, ""),
+      ...(Array.isArray(body.messageIds) ? { messageIds: stringArray(body.messageIds, []) } : {}),
+      ...(typeof body.periodStart === "string"
+        ? { periodStart: stringValue(body.periodStart, "") }
+        : {}),
+      ...(typeof body.periodEnd === "string" ? { periodEnd: stringValue(body.periodEnd, "") } : {}),
     };
     await runtime.queues.add("faq.generate", payload);
     return context.json({ ok: true, accepted: true }, 202);

@@ -128,11 +128,16 @@ jobの可視化、E2Eに近い確認に移っている。
 
 ブラウザ操作レベルの自動テストは、Playwright等のE2E基盤追加を伴うため、P2の別タスクとして扱う。shadcn/ui 導入後の実データ投入状態での表示密度、折り返し、モバイル幅の目視確認も継続タスクとして残す。
 
-### FAQ / report queue payload の実利用
+### FAQ / report queue payload の実利用（完了）
 
-- `faq.generate` の `messageIds`、`periodStart`、`periodEnd` を処理に反映する。
-- `report.weekly.channelIds` を週報対象の絞り込みに反映する。
-- 現状は settings と全体snapshotへの依存が強い。
+2026-05-21 に実装済み。
+
+- `faq.generate` の `messageIds`、`periodStart`、`periodEnd` をLLM入力に反映する。
+- 絞り込み付きFAQ生成では、対象投稿に紐づく既存FAQ候補だけを差し替え、範囲外の候補は残す。
+- `report.weekly` は `channelIds`、`periodStart`、`periodEnd`
+  で投稿、分類、FAQ候補、自動返信、metricsを同じ対象集合に絞る。
+- 週報プロンプトと保存される `targetChannelIds` は `report.weekly.channelIds` を反映する。
+- `/api/faq-candidates/generate` から任意の `messageIds` をqueue payloadへ渡せるようにした。
 
 ### 手動ナレッジ拡充
 
