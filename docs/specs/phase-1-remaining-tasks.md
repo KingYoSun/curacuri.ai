@@ -58,7 +58,9 @@ jobの可視化、E2Eに近い確認に移っている。
 - `do_not_reply` は本文なしでブロックする。
 - Dashboard の自動返信ポリシーから、構造化フォームでルールを追加・編集・削除できる。
 
-### LLM生成関数の `Phase1State` 依存解消
+### LLM生成関数の `Phase1State` 依存解消（完了）
+
+2026-05-21 に実装済み。
 
 - `generateClassificationWithLlm` の `Phase1State` 依存を外す。
 - `generateAutoReplyWithLlm` の `Phase1State` 依存を外す。

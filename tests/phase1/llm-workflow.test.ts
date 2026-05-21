@@ -6,6 +6,7 @@ import { createPhase1State } from "../../src/app/store.js";
 import {
   generateWeeklyReport,
   processMessage,
+  refreshFaqCandidates,
   reprocessLlmTask,
   retryLlmRun,
 } from "../../src/app/workflow.js";
@@ -339,5 +340,47 @@ describe("LLM workflow", () => {
     expect(state.classifications.size).toBe(1);
     expect(state.faqCandidates.size).toBeGreaterThan(0);
     expect(report?.status).toBe("ready");
+  });
+
+  it("keeps existing FAQ candidates when LLM FAQ generation fails", async () => {
+    const state = createPhase1State();
+    const message = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+    await processMessage(state, message, new FakeLlmClient());
+    await refreshFaqCandidates(
+      state,
+      new FakeLlmClient({
+        overrides: {
+          faq_candidates: {
+            candidates: [
+              {
+                source_message_ids: [message.id],
+                topic: "Webhook設定",
+                current_answer_status: "existing_faq_possible",
+                draft_question: "Webhook設定はどこで確認できますか？",
+                draft_answer: "この回答文案は公式回答ではありません。",
+                confidence: 0.82,
+                status: "candidate",
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const existingCandidates = [...state.faqCandidates.values()];
+
+    await refreshFaqCandidates(state, new FakeLlmClient({ failures: ["faq_candidates"] }));
+
+    expect([...state.faqCandidates.values()]).toEqual(existingCandidates);
+    expect([...state.llmGenerationRuns.values()].at(-1)).toMatchObject({
+      taskType: "faq_candidates",
+      status: "failed",
+    });
   });
 });

@@ -21,6 +21,7 @@ import type {
   FeedbackKind,
   FaqCandidate,
   FaqCandidateStatus,
+  LlmGenerationRun,
   LlmTaskType,
 } from "../shared/types.js";
 import type {
@@ -47,6 +48,12 @@ export type RepositoryWorkflow = {
 
 function clientOrDefault(client: LlmClient | undefined): LlmClient {
   return client ?? createDefaultLlmClient();
+}
+
+function saveLlmRun(runMap: Map<string, LlmGenerationRun>, run: LlmGenerationRun | null): void {
+  if (run !== null) {
+    runMap.set(run.id, run);
+  }
 }
 
 export async function enqueueSampleLog(
@@ -95,13 +102,15 @@ export async function handleMessageClassify(
   if (message?.deletedAt !== null) {
     return;
   }
-  const classification = await generateClassificationWithLlm(
-    state,
+  const classificationResult = await generateClassificationWithLlm(
     message,
     clientOrDefault(context.llmClient),
   );
+  saveLlmRun(state.llmGenerationRuns, classificationResult.run);
+  const { classification } = classificationResult;
   const followUpJobs: QueuePayload[] = [];
   if (classification !== null) {
+    state.classifications.set(classification.id, classification);
     const notification = createAdminNotification(message, classification, state.settings);
     if (notification !== null) {
       state.notifications.set(notification.id, notification);
@@ -155,14 +164,15 @@ export async function handleAutoReplyDecide(
   if (message === undefined || classification === undefined || message.deletedAt !== null) {
     return;
   }
-  const reply = normalizePendingSend(
-    await generateAutoReplyWithLlm(
-      state,
-      message,
-      classification,
-      clientOrDefault(context.llmClient),
-    ),
+  const autoReplyResult = await generateAutoReplyWithLlm(
+    message,
+    classification,
+    state.autoReplyPolicy,
+    [...state.faqCandidates.values()],
+    clientOrDefault(context.llmClient),
   );
+  saveLlmRun(state.llmGenerationRuns, autoReplyResult.run);
+  const reply = normalizePendingSend(autoReplyResult.autoReply);
   state.autoReplies.set(reply.id, reply);
   const matchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
     message,
@@ -208,7 +218,18 @@ export async function handleFaqGenerate(
       state.messages.delete(id);
     }
   }
-  await generateFaqCandidatesWithLlm(state, clientOrDefault(context.llmClient));
+  const { candidates, run } = await generateFaqCandidatesWithLlm(
+    [...state.messages.values()],
+    [...state.classifications.values()],
+    clientOrDefault(context.llmClient),
+  );
+  saveLlmRun(state.llmGenerationRuns, run);
+  if (candidates !== null) {
+    state.faqCandidates.clear();
+    for (const candidate of candidates) {
+      state.faqCandidates.set(candidate.id, candidate);
+    }
+  }
   await context.repository.saveState(state);
 }
 
@@ -226,11 +247,19 @@ export async function handleReportWeekly(
     [...state.faqCandidates.values()],
     [...state.autoReplies.values()],
   );
-  await generateWeeklyReportWithLlm(state, clientOrDefault(context.llmClient), {
+  const { report, run } = await generateWeeklyReportWithLlm(clientOrDefault(context.llmClient), {
+    settings: state.settings,
+    messages: [...state.messages.values()],
+    classifications: [...state.classifications.values()],
+    faqCandidates: [...state.faqCandidates.values()],
     periodStart: payload.periodStart,
     periodEnd: payload.periodEnd,
     metrics,
   });
+  saveLlmRun(state.llmGenerationRuns, run);
+  if (report !== null) {
+    state.weeklyReports.set(report.id, report);
+  }
   await context.repository.saveState(state);
 }
 

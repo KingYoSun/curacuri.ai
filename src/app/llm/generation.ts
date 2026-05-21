@@ -5,13 +5,14 @@ import {
   sensitiveAutoReplyKeywords,
 } from "../auto-reply-rules.js";
 import { newId, nowIso } from "../ids.js";
-import type { Phase1State } from "../store.js";
 import {
   type AutoReply,
   type AutoReplyCategory,
+  type AutoReplyPolicy,
   type Classification,
   type FaqCandidate,
   type GuildSettings,
+  type LlmGenerationRun,
   type Message,
   type SourceRef,
   type WeeklyReport,
@@ -30,6 +31,26 @@ import {
   parseLlmFaqCandidatesOutput,
   parseLlmWeeklyReportOutput,
 } from "./validation.js";
+
+export type ClassificationLlmGeneration = {
+  readonly classification: Classification | null;
+  readonly run: LlmGenerationRun;
+};
+
+export type AutoReplyLlmGeneration = {
+  readonly autoReply: AutoReply;
+  readonly run: LlmGenerationRun | null;
+};
+
+export type FaqCandidatesLlmGeneration = {
+  readonly candidates: readonly FaqCandidate[] | null;
+  readonly run: LlmGenerationRun;
+};
+
+export type WeeklyReportLlmGeneration = {
+  readonly report: WeeklyReport | null;
+  readonly run: LlmGenerationRun;
+};
 
 function hasAllowedLabel(
   policy: GuildSettings["autoReplyAllowedLabels"],
@@ -72,10 +93,9 @@ function sourceRefsForFaq(
 function preEscalationReason(
   message: Message,
   classification: Classification,
-  state: Phase1State,
+  policy: AutoReplyPolicy,
   sourceRefs: readonly SourceRef[],
 ): string | null {
-  const policy = state.autoReplyPolicy;
   if (!policy.enabled || policy.mode === "disabled") {
     return "自動返信は無効です。";
   }
@@ -129,7 +149,7 @@ function failedAutoReply(
 function blockedAutoReply(
   message: Message,
   classification: Classification,
-  state: Phase1State,
+  policy: AutoReplyPolicy,
   reason: string,
   sourceRefs: readonly SourceRef[],
 ): AutoReply {
@@ -137,7 +157,7 @@ function blockedAutoReply(
     id: newId(),
     messageId: message.id,
     classificationId: classification.id,
-    mode: state.autoReplyPolicy.mode,
+    mode: policy.mode,
     replyCategory: "intake",
     body: "",
     sourceRefs,
@@ -152,11 +172,10 @@ function blockedAutoReply(
 }
 
 export async function generateClassificationWithLlm(
-  state: Phase1State,
   message: Message,
   client: LlmClient,
-): Promise<Classification | null> {
-  const run = startLlmRun(state, "classification", message.id, client.modelName);
+): Promise<ClassificationLlmGeneration> {
+  const run = startLlmRun("classification", message.id, client.modelName);
   try {
     const result = await client.generateJson({
       taskType: "classification",
@@ -168,146 +187,211 @@ export async function generateClassificationWithLlm(
       modelName: result.modelName,
       createdAt: nowIso(),
     });
-    state.classifications.set(classification.id, classification);
-    finishLlmRun(state, run, result.rawJson);
-    return classification;
+    return {
+      classification,
+      run: finishLlmRun(run, result.rawJson),
+    };
   } catch (error) {
-    failLlmRun(state, run, error);
-    return null;
+    return {
+      classification: null,
+      run: failLlmRun(run, error),
+    };
   }
 }
 
 export async function generateAutoReplyWithLlm(
-  state: Phase1State,
   message: Message,
   classification: Classification,
+  autoReplyPolicy: AutoReplyPolicy,
+  faqCandidates: readonly FaqCandidate[],
   client: LlmClient,
-): Promise<AutoReply> {
-  const sourceRefs = sourceRefsForFaq(classification, [...state.faqCandidates.values()]);
-  const preReason = preEscalationReason(message, classification, state, sourceRefs);
+): Promise<AutoReplyLlmGeneration> {
+  const sourceRefs = sourceRefsForFaq(classification, faqCandidates);
+  const preReason = preEscalationReason(message, classification, autoReplyPolicy, sourceRefs);
   if (preReason !== null) {
-    return blockedAutoReply(message, classification, state, preReason, sourceRefs);
+    return {
+      autoReply: blockedAutoReply(message, classification, autoReplyPolicy, preReason, sourceRefs),
+      run: null,
+    };
   }
 
-  const preMatchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
+  const preMatchedRule = matchAutoReplyEscalationRule(autoReplyPolicy.escalationRules, {
     message,
     classification,
   });
   if (preMatchedRule?.rule.action === "do_not_reply") {
     return {
-      ...blockedAutoReply(message, classification, state, preMatchedRule.reason, sourceRefs),
-      status: "blocked",
+      autoReply: {
+        ...blockedAutoReply(
+          message,
+          classification,
+          autoReplyPolicy,
+          preMatchedRule.reason,
+          sourceRefs,
+        ),
+        status: "blocked",
+      },
+      run: null,
     };
   }
   if (preMatchedRule?.rule.action === "notify_admin") {
     return {
-      ...blockedAutoReply(message, classification, state, preMatchedRule.reason, sourceRefs),
-      status: "escalated",
+      autoReply: {
+        ...blockedAutoReply(
+          message,
+          classification,
+          autoReplyPolicy,
+          preMatchedRule.reason,
+          sourceRefs,
+        ),
+        status: "escalated",
+      },
+      run: null,
     };
   }
 
-  const run = startLlmRun(state, "auto_reply", message.id, client.modelName);
+  const run = startLlmRun("auto_reply", message.id, client.modelName);
   try {
     const result = await client.generateJson({
       taskType: "auto_reply",
-      messages: buildAutoReplyMessages(message, classification, state.autoReplyPolicy, sourceRefs),
+      messages: buildAutoReplyMessages(message, classification, autoReplyPolicy, sourceRefs),
     });
     const output = parseLlmAutoReplyOutput(result.rawJson);
-    finishLlmRun(state, run, result.rawJson);
+    const finishedRun = finishLlmRun(run, result.rawJson);
 
     const category = safeAutoReplyCategory(output.replyCategory);
-    if (!state.autoReplyPolicy.allowedCategories.includes(category)) {
-      return blockedAutoReply(
-        message,
-        classification,
-        state,
-        "LLM出力が許可カテゴリ外だったため運営確認に回します。",
-        sourceRefs,
-      );
+    if (!autoReplyPolicy.allowedCategories.includes(category)) {
+      return {
+        autoReply: blockedAutoReply(
+          message,
+          classification,
+          autoReplyPolicy,
+          "LLM出力が許可カテゴリ外だったため運営確認に回します。",
+          sourceRefs,
+        ),
+        run: finishedRun,
+      };
     }
-    if (output.confidence < state.autoReplyPolicy.minConfidence) {
-      return blockedAutoReply(
-        message,
-        classification,
-        state,
-        "LLM出力のconfidenceが閾値未満です。",
-        sourceRefs,
-      );
+    if (output.confidence < autoReplyPolicy.minConfidence) {
+      return {
+        autoReply: blockedAutoReply(
+          message,
+          classification,
+          autoReplyPolicy,
+          "LLM出力のconfidenceが閾値未満です。",
+          sourceRefs,
+        ),
+        run: finishedRun,
+      };
     }
     if (output.decision === "do_not_reply") {
-      return blockedAutoReply(message, classification, state, output.reason, sourceRefs);
+      return {
+        autoReply: blockedAutoReply(
+          message,
+          classification,
+          autoReplyPolicy,
+          output.reason,
+          sourceRefs,
+        ),
+        run: finishedRun,
+      };
     }
     if (output.decision === "escalate") {
       return {
-        ...blockedAutoReply(message, classification, state, output.reason, sourceRefs),
-        status: "escalated",
+        autoReply: {
+          ...blockedAutoReply(message, classification, autoReplyPolicy, output.reason, sourceRefs),
+          status: "escalated",
+        },
+        run: finishedRun,
       };
     }
 
-    const matchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
+    const matchedRule = matchAutoReplyEscalationRule(autoReplyPolicy.escalationRules, {
       message,
       classification,
       category,
     });
     if (matchedRule?.rule.action === "do_not_reply") {
       return {
-        ...blockedAutoReply(message, classification, state, matchedRule.reason, sourceRefs),
-        replyCategory: category,
-        status: "blocked",
+        autoReply: {
+          ...blockedAutoReply(
+            message,
+            classification,
+            autoReplyPolicy,
+            matchedRule.reason,
+            sourceRefs,
+          ),
+          replyCategory: category,
+          status: "blocked",
+        },
+        run: finishedRun,
       };
     }
     if (matchedRule?.rule.action === "notify_admin") {
       return {
-        ...blockedAutoReply(message, classification, state, matchedRule.reason, sourceRefs),
-        replyCategory: category,
-        status: "escalated",
+        autoReply: {
+          ...blockedAutoReply(
+            message,
+            classification,
+            autoReplyPolicy,
+            matchedRule.reason,
+            sourceRefs,
+          ),
+          replyCategory: category,
+          status: "escalated",
+        },
+        run: finishedRun,
       };
     }
 
     const shouldHoldForApproval =
-      state.autoReplyPolicy.mode === "approval_required" ||
+      autoReplyPolicy.mode === "approval_required" ||
       output.decision === "pending_approval" ||
       preMatchedRule?.rule.action === "draft_for_approval" ||
       matchedRule?.rule.action === "draft_for_approval";
     const createdAt = nowIso();
     return {
-      id: newId(),
-      messageId: message.id,
-      classificationId: classification.id,
-      mode: state.autoReplyPolicy.mode,
-      replyCategory: category,
-      body: output.body,
-      sourceRefs,
-      confidence: output.confidence,
-      decisionReason:
-        preMatchedRule?.rule.action === "draft_for_approval"
-          ? preMatchedRule.reason
-          : matchedRule?.rule.action === "draft_for_approval"
-            ? matchedRule.reason
-            : output.reason,
-      status: shouldHoldForApproval ? "pending_approval" : "sent",
-      sentMessageId: shouldHoldForApproval ? null : newId(),
-      approvedBy: null,
-      sentAt: shouldHoldForApproval ? null : createdAt,
-      createdAt,
+      autoReply: {
+        id: newId(),
+        messageId: message.id,
+        classificationId: classification.id,
+        mode: autoReplyPolicy.mode,
+        replyCategory: category,
+        body: output.body,
+        sourceRefs,
+        confidence: output.confidence,
+        decisionReason:
+          preMatchedRule?.rule.action === "draft_for_approval"
+            ? preMatchedRule.reason
+            : matchedRule?.rule.action === "draft_for_approval"
+              ? matchedRule.reason
+              : output.reason,
+        status: shouldHoldForApproval ? "pending_approval" : "sent",
+        sentMessageId: shouldHoldForApproval ? null : newId(),
+        approvedBy: null,
+        sentAt: shouldHoldForApproval ? null : createdAt,
+        createdAt,
+      },
+      run: finishedRun,
     };
   } catch (error) {
-    failLlmRun(state, run, error);
-    return failedAutoReply(
-      message,
-      classification,
-      error instanceof Error ? error.message : String(error),
-    );
+    return {
+      autoReply: failedAutoReply(
+        message,
+        classification,
+        error instanceof Error ? error.message : String(error),
+      ),
+      run: failLlmRun(run, error),
+    };
   }
 }
 
 export async function generateFaqCandidatesWithLlm(
-  state: Phase1State,
+  messages: readonly Message[],
+  classifications: readonly Classification[],
   client: LlmClient,
-): Promise<readonly FaqCandidate[]> {
-  const run = startLlmRun(state, "faq_candidates", "all", client.modelName);
-  const messages = [...state.messages.values()];
-  const classifications = [...state.classifications.values()];
+): Promise<FaqCandidatesLlmGeneration> {
+  const run = startLlmRun("faq_candidates", "all", client.modelName);
   try {
     const result = await client.generateJson({
       taskType: "faq_candidates",
@@ -338,42 +422,42 @@ export async function generateFaqCandidatesWithLlm(
         updatedAt: now,
       } satisfies FaqCandidate;
     });
-    state.faqCandidates.clear();
-    for (const candidate of candidates) {
-      state.faqCandidates.set(candidate.id, candidate);
-    }
-    finishLlmRun(state, run, result.rawJson);
-    return candidates;
+    return {
+      candidates,
+      run: finishLlmRun(run, result.rawJson),
+    };
   } catch (error) {
-    failLlmRun(state, run, error);
-    return [...state.faqCandidates.values()];
+    return {
+      candidates: null,
+      run: failLlmRun(run, error),
+    };
   }
 }
 
 export async function generateWeeklyReportWithLlm(
-  state: Phase1State,
   client: LlmClient,
   fields: {
+    readonly settings: GuildSettings;
+    readonly messages: readonly Message[];
+    readonly classifications: readonly Classification[];
+    readonly faqCandidates: readonly FaqCandidate[];
     readonly periodStart: string;
     readonly periodEnd: string;
     readonly metrics: WeeklyReportMetrics;
   },
-): Promise<WeeklyReport | null> {
+): Promise<WeeklyReportLlmGeneration> {
   const targetId = `${fields.periodStart}:${fields.periodEnd}`;
-  const run = startLlmRun(state, "weekly_report", targetId, client.modelName);
-  const messages = [...state.messages.values()];
-  const classifications = [...state.classifications.values()];
-  const faqCandidates = [...state.faqCandidates.values()];
+  const run = startLlmRun("weekly_report", targetId, client.modelName);
   try {
     const result = await client.generateJson({
       taskType: "weekly_report",
       messages: buildWeeklyReportMessages(
         fields.periodStart,
         fields.periodEnd,
-        state.settings,
-        messages,
-        classifications,
-        faqCandidates,
+        fields.settings,
+        fields.messages,
+        fields.classifications,
+        fields.faqCandidates,
         fields.metrics,
       ),
     });
@@ -382,20 +466,23 @@ export async function generateWeeklyReportWithLlm(
       id: newId(),
       periodStart: fields.periodStart,
       periodEnd: fields.periodEnd,
-      targetChannelIds: state.settings.targetChannelIds,
-      excludedChannelIds: state.settings.excludedChannelIds,
-      messageCount: messages.length,
+      targetChannelIds: fields.settings.targetChannelIds,
+      excludedChannelIds: fields.settings.excludedChannelIds,
+      messageCount: fields.messages.length,
       shortBody: output.shortBody,
       detailedBody: output.detailedBody,
       metrics: fields.metrics,
       status: "ready",
       createdAt: nowIso(),
     };
-    state.weeklyReports.set(report.id, report);
-    finishLlmRun(state, run, result.rawJson);
-    return report;
+    return {
+      report,
+      run: finishLlmRun(run, result.rawJson),
+    };
   } catch (error) {
-    failLlmRun(state, run, error);
-    return null;
+    return {
+      report: null,
+      run: failLlmRun(run, error),
+    };
   }
 }

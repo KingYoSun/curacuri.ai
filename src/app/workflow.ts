@@ -18,6 +18,7 @@ import {
   type AutoReply,
   type FeedbackKind,
   type FaqCandidateStatus,
+  type LlmGenerationRun,
   type Message,
   type LlmTaskType,
   type WeeklyReport,
@@ -56,6 +57,12 @@ function hasNotificationForMessage(state: Phase1State, messageId: string): boole
   );
 }
 
+function saveLlmRun(state: Phase1State, run: LlmGenerationRun | null): void {
+  if (run !== null) {
+    state.llmGenerationRuns.set(run.id, run);
+  }
+}
+
 export function ingestMessage(state: Phase1State, message: Message): Message {
   if (hasMessage(state, message)) {
     const existing = [...state.messages.values()].find(
@@ -82,17 +89,27 @@ export async function processMessage(
   message: Message,
   client: LlmClient = createDefaultLlmClient(),
 ): Promise<void> {
-  const classification = await generateClassificationWithLlm(state, message, client);
+  const classificationResult = await generateClassificationWithLlm(message, client);
+  saveLlmRun(state, classificationResult.run);
+  const { classification } = classificationResult;
   if (classification === null) {
     return;
   }
+  state.classifications.set(classification.id, classification);
 
   const notification = createAdminNotification(message, classification, state.settings);
   if (notification !== null) {
     state.notifications.set(notification.id, notification);
   }
 
-  const autoReply = await generateAutoReplyWithLlm(state, message, classification, client);
+  const { autoReply, run } = await generateAutoReplyWithLlm(
+    message,
+    classification,
+    state.autoReplyPolicy,
+    [...state.faqCandidates.values()],
+    client,
+  );
+  saveLlmRun(state, run);
   state.autoReplies.set(autoReply.id, autoReply);
   const matchedRule = matchAutoReplyEscalationRule(state.autoReplyPolicy.escalationRules, {
     message,
@@ -150,7 +167,18 @@ export async function refreshFaqCandidates(
   state: Phase1State,
   client: LlmClient = createDefaultLlmClient(),
 ): Promise<void> {
-  await generateFaqCandidatesWithLlm(state, client);
+  const { candidates, run } = await generateFaqCandidatesWithLlm(
+    [...state.messages.values()],
+    [...state.classifications.values()],
+    client,
+  );
+  saveLlmRun(state, run);
+  if (candidates !== null) {
+    state.faqCandidates.clear();
+    for (const candidate of candidates) {
+      state.faqCandidates.set(candidate.id, candidate);
+    }
+  }
 }
 
 export async function generateWeeklyReport(
@@ -165,11 +193,19 @@ export async function generateWeeklyReport(
     [...state.faqCandidates.values()],
     [...state.autoReplies.values()],
   );
-  const report = await generateWeeklyReportWithLlm(state, client, {
+  const { report, run } = await generateWeeklyReportWithLlm(client, {
+    settings: state.settings,
+    messages: [...state.messages.values()],
+    classifications: [...state.classifications.values()],
+    faqCandidates: [...state.faqCandidates.values()],
     periodStart,
     periodEnd,
     metrics,
   });
+  saveLlmRun(state, run);
+  if (report !== null) {
+    state.weeklyReports.set(report.id, report);
+  }
   state.queuedJobs.push({
     queueName: "report.weekly",
     payload: {
@@ -231,7 +267,14 @@ export async function reprocessLlmTask(
     for (const message of messages) {
       const classification = classificationsByMessage.get(message.id);
       if (classification !== undefined) {
-        const autoReply = await generateAutoReplyWithLlm(state, message, classification, client);
+        const { autoReply, run } = await generateAutoReplyWithLlm(
+          message,
+          classification,
+          state.autoReplyPolicy,
+          [...state.faqCandidates.values()],
+          client,
+        );
+        saveLlmRun(state, run);
         state.autoReplies.set(autoReply.id, autoReply);
       }
     }
