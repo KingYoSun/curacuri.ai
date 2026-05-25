@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   handleAutoReplyDecide,
+  handleDiscordIngest,
   handleFaqGenerate,
   handleMessageClassify,
   handleReportWeekly,
@@ -468,6 +469,104 @@ function userPrompt(client: RecordingLlmClient, taskType: LlmJsonRequest["taskTy
 }
 
 describe("persistent workflow retention filtering", () => {
+  it("creates message.classify jobs from sample import ingest records", async () => {
+    const state = createPhase1State();
+    const repository = new MemoryRepository(state);
+    const queues = new MemoryQueue();
+
+    await handleDiscordIngest(
+      { repository, queues, llmClient: new RecordingLlmClient({}) },
+      {
+        kind: "sample_record",
+        index: 0,
+        record: {
+          text: "Webhook通知の設定ってどこからできますか？",
+          channel_context: "#support / 使い方質問",
+        },
+      },
+    );
+
+    const message = [...state.messages.values()][0];
+    expect(message).toBeDefined();
+    expect(queues.jobs).toEqual([
+      {
+        queueName: "message.classify",
+        payload: { messageId: message?.id },
+      },
+    ]);
+  });
+
+  it("creates notification and auto reply decision jobs from classification", async () => {
+    const state = createPhase1State();
+    state.autoReplyPolicy = {
+      ...state.autoReplyPolicy,
+      enabled: true,
+      mode: "intake_only",
+      allowedChannelIds: ["support"],
+    };
+    const message = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+    const repository = new MemoryRepository(state);
+    const queues = new MemoryQueue();
+
+    await handleMessageClassify(
+      {
+        repository,
+        queues,
+        llmClient: new RecordingLlmClient({
+          classification: {
+            labels: ["質問", "公式回答待ち"],
+            importance: "high",
+            admin_action_needed: true,
+            admin_action_type: "reply_check",
+            confidence: 0.91,
+            reason: "公式確認が必要な質問のため。",
+            suggested_summary: "公式確認が必要な質問。",
+          },
+        }),
+      },
+      { messageId: message.id },
+    );
+
+    expect(queues.jobs.map((job) => job.queueName)).toEqual(
+      expect.arrayContaining(["ops.notify", "auto_reply.decide"]),
+    );
+    expect(state.notifications.size).toBeGreaterThan(0);
+  });
+
+  it("records failed LLM runs when FAQ queue generation fails", async () => {
+    const state = createPhase1State();
+    const message = normalizeSampleRecord(
+      {
+        text: "Webhook通知の設定ってどこからできますか？",
+        channel_context: "#support / 使い方質問",
+      },
+      0,
+    );
+    state.messages.set(message.id, message);
+    state.classifications.set("classification-1", classificationFor(message));
+    const repository = new MemoryRepository(state);
+
+    await handleFaqGenerate({
+      repository,
+      queues: new MemoryQueue(),
+      llmClient: new RecordingLlmClient({}, ["faq_candidates"]),
+    });
+
+    expect([...state.llmGenerationRuns.values()]).toContainEqual(
+      expect.objectContaining({
+        taskType: "faq_candidates",
+        status: "failed",
+      }),
+    );
+  });
+
   it("does not enqueue auto reply decisions for low-value small talk", async () => {
     const state = createPhase1State();
     state.autoReplyPolicy = {
