@@ -13,9 +13,11 @@ import type { FailedQueueJob, QueueName, QueuePayload } from "../../src/shared/q
 import type {
   AdminNotification,
   AutoReply,
+  Classification,
   FaqCandidate,
   ManualKnowledge,
   ManualKnowledgeSearchResult,
+  Message,
 } from "../../src/shared/types.js";
 
 function unsupportedPromise<T>(): Promise<T> {
@@ -27,6 +29,8 @@ function createDashboardRuntime(seed: {
   readonly faqCandidate?: FaqCandidate;
   readonly autoReply?: AutoReply;
   readonly manualKnowledge?: ManualKnowledge;
+  readonly message?: Message;
+  readonly classification?: Classification;
   readonly embeddingFailure?: boolean;
 }): AppRuntime & {
   readonly enqueuedJobs: { readonly queueName: QueueName; readonly payload: QueuePayload }[];
@@ -60,6 +64,12 @@ function createDashboardRuntime(seed: {
   }
   if (seed.manualKnowledge !== undefined) {
     state.manualKnowledge.set(seed.manualKnowledge.id, seed.manualKnowledge);
+  }
+  if (seed.message !== undefined) {
+    state.messages.set(seed.message.id, seed.message);
+  }
+  if (seed.classification !== undefined) {
+    state.classifications.set(seed.classification.id, seed.classification);
   }
   const repository: Phase1Repository = {
     ensureSeed() {
@@ -102,11 +112,39 @@ function createDashboardRuntime(seed: {
     getMessage() {
       return Promise.resolve(null);
     },
-    listMessages() {
-      return Promise.resolve([]);
+    listMessages(filters = {}) {
+      const classificationsByMessage = new Map(
+        [...state.classifications.values()].map((classification) => [
+          classification.messageId,
+          classification,
+        ]),
+      );
+      return Promise.resolve(
+        [...state.messages.values()].filter((message) => {
+          if (message.deletedAt !== null) return false;
+          if (filters.periodStart !== undefined && message.postedAt < filters.periodStart) {
+            return false;
+          }
+          if (filters.periodEnd !== undefined && message.postedAt > filters.periodEnd) {
+            return false;
+          }
+          if (filters.channelId !== undefined && message.channelId !== filters.channelId) {
+            return false;
+          }
+          if (
+            filters.label !== undefined &&
+            !classificationsByMessage
+              .get(message.id)
+              ?.labels.includes(filters.label as Classification["labels"][number])
+          ) {
+            return false;
+          }
+          return true;
+        }),
+      );
     },
     listClassifications() {
-      return unsupportedPromise();
+      return Promise.resolve([...state.classifications.values()]);
     },
     getClassification() {
       return unsupportedPromise();
@@ -226,7 +264,8 @@ function createDashboardRuntime(seed: {
     getLlmRun() {
       return unsupportedPromise();
     },
-    saveFeedback() {
+    saveFeedback(feedback) {
+      state.feedback.set(feedback.id, feedback);
       return Promise.resolve();
     },
     logicalDeleteExpiredMessages() {
@@ -323,6 +362,42 @@ function autoReply(status: AutoReply["status"]): AutoReply {
     approvedBy: null,
     sentAt: status === "sent" ? "2026-05-21T00:00:00.000Z" : null,
     createdAt: "2026-05-21T00:00:00.000Z",
+  };
+}
+
+function message(fields: Partial<Message> = {}): Message {
+  return {
+    id: "message-1",
+    source: "sample_log",
+    guildId: "dogfood-guild",
+    channelId: "support",
+    channelName: "#support",
+    messageId: "discord-message-1",
+    threadId: null,
+    authorIdHash: "author-1",
+    content: "Webhook通知の設定ってどこからできますか？",
+    postedAt: "2026-05-21T00:00:00.000Z",
+    ingestedAt: "2026-05-21T00:00:00.000Z",
+    deletedAt: null,
+    ...fields,
+  };
+}
+
+function classification(fields: Partial<Classification> = {}): Classification {
+  return {
+    id: "classification-1",
+    messageId: "message-1",
+    labels: ["質問"],
+    importance: "medium",
+    adminActionNeeded: false,
+    adminActionType: "weekly_report",
+    confidence: 0.91,
+    reason: "使い方を確認している投稿のため。",
+    suggestedSummary: "Webhook通知設定の質問。",
+    modelName: "test",
+    rawOutput: {},
+    createdAt: "2026-05-21T00:00:00.000Z",
+    ...fields,
   };
 }
 
@@ -443,6 +518,41 @@ describe("dashboard action API", () => {
         },
       },
     ]);
+  });
+
+  it("records feedback through the API", async () => {
+    const app = createApiApp(createDashboardRuntime({ autoReply: autoReply("sent") }));
+    const response = await app.request("/api/auto-replies/auto-reply-1/feedback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ feedbackKind: "unsafe_or_too_much", note: "強すぎる返信" }),
+    });
+
+    expect(response.ok).toBe(true);
+    expect(await response.json()).toMatchObject({
+      targetType: "auto_reply",
+      targetId: "auto-reply-1",
+      feedbackKind: "unsafe_or_too_much",
+      note: "強すぎる返信",
+    });
+  });
+
+  it("passes message filter query values to the repository", async () => {
+    const runtime = createDashboardRuntime({
+      message: message(),
+      classification: classification(),
+    });
+    const app = createApiApp(runtime);
+
+    const matched = await app.request(
+      "/api/messages?periodStart=2026-05-20&periodEnd=2026-05-22&channelId=support&label=%E8%B3%AA%E5%95%8F",
+    );
+    expect(await matched.json()).toMatchObject([{ id: "message-1" }]);
+
+    const missed = await app.request(
+      "/api/messages?periodStart=2026-05-20&periodEnd=2026-05-22&channelId=bugs&label=%E8%B3%AA%E5%95%8F",
+    );
+    expect(await missed.json()).toEqual([]);
   });
 
   it("creates, updates, lists, and reindexes manual knowledge", async () => {
