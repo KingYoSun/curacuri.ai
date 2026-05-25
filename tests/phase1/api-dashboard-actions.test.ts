@@ -18,6 +18,8 @@ import type {
   ManualKnowledge,
   ManualKnowledgeSearchResult,
   Message,
+  AdminFeedback,
+  WeeklyReport,
 } from "../../src/shared/types.js";
 
 function unsupportedPromise<T>(): Promise<T> {
@@ -31,12 +33,15 @@ function createDashboardRuntime(seed: {
   readonly manualKnowledge?: ManualKnowledge;
   readonly message?: Message;
   readonly classification?: Classification;
+  readonly weeklyReport?: WeeklyReport;
   readonly embeddingFailure?: boolean;
 }): AppRuntime & {
   readonly enqueuedJobs: { readonly queueName: QueueName; readonly payload: QueuePayload }[];
+  readonly savedFeedback: AdminFeedback[];
 } {
   const state = createPhase1State();
   const enqueuedJobs: { readonly queueName: QueueName; readonly payload: QueuePayload }[] = [];
+  const savedFeedback: AdminFeedback[] = [];
   const failedQueueJobs = new Map<string, FailedQueueJob>([
     [
       "message.classify:failed-1",
@@ -70,6 +75,9 @@ function createDashboardRuntime(seed: {
   }
   if (seed.classification !== undefined) {
     state.classifications.set(seed.classification.id, seed.classification);
+  }
+  if (seed.weeklyReport !== undefined) {
+    state.weeklyReports.set(seed.weeklyReport.id, seed.weeklyReport);
   }
   const repository: Phase1Repository = {
     ensureSeed() {
@@ -253,10 +261,10 @@ function createDashboardRuntime(seed: {
       return Promise.resolve(results);
     },
     listWeeklyReports() {
-      return unsupportedPromise();
+      return Promise.resolve([...state.weeklyReports.values()]);
     },
-    getWeeklyReport() {
-      return unsupportedPromise();
+    getWeeklyReport(id) {
+      return Promise.resolve(state.weeklyReports.get(id) ?? null);
     },
     listLlmRuns() {
       return unsupportedPromise();
@@ -266,6 +274,7 @@ function createDashboardRuntime(seed: {
     },
     saveFeedback(feedback) {
       state.feedback.set(feedback.id, feedback);
+      savedFeedback.push(feedback);
       return Promise.resolve();
     },
     logicalDeleteExpiredMessages() {
@@ -311,6 +320,7 @@ function createDashboardRuntime(seed: {
       },
     },
     enqueuedJobs,
+    savedFeedback,
   };
 }
 
@@ -416,6 +426,30 @@ function manualKnowledge(status: ManualKnowledge["status"] = "published"): Manua
     embeddingError: null,
     createdAt: "2026-05-21T00:00:00.000Z",
     updatedAt: "2026-05-21T00:00:00.000Z",
+  };
+}
+
+function weeklyReport(): WeeklyReport {
+  return {
+    id: "weekly-report-1",
+    periodStart: "2026-05-11",
+    periodEnd: "2026-05-17",
+    targetChannelIds: ["support"],
+    excludedChannelIds: ["off-topic"],
+    messageCount: 12,
+    shortBody: "未回答質問と要望が増えています。",
+    detailedBody: "support で未回答質問が複数ありました。",
+    metrics: {
+      unansweredQuestionCount: 3,
+      bugReportCount: 1,
+      featureRequestCount: 2,
+      complaintCount: 1,
+      faqCandidateCount: 2,
+      autoReplySentCount: 4,
+      autoReplyEscalatedCount: 1,
+    },
+    status: "ready",
+    createdAt: "2026-05-18T00:00:00.000Z",
   };
 }
 
@@ -722,6 +756,31 @@ describe("dashboard action API", () => {
         },
       },
     ]);
+  });
+
+  it("saves admin feedback for weekly reports", async () => {
+    const runtime = createDashboardRuntime({ weeklyReport: weeklyReport() });
+    const app = createApiApp(runtime);
+    const response = await app.request("/api/reports/weekly/weekly-report-1/feedback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ feedbackKind: "missed", note: "重要な未回答質問が抜けている" }),
+    });
+
+    expect(response.ok).toBe(true);
+    expect(await response.json()).toMatchObject({
+      targetType: "weekly_report",
+      targetId: "weekly-report-1",
+      feedbackKind: "missed",
+      note: "重要な未回答質問が抜けている",
+    });
+    expect(runtime.savedFeedback).toHaveLength(1);
+    expect(runtime.savedFeedback[0]).toMatchObject({
+      targetType: "weekly_report",
+      targetId: "weekly-report-1",
+      feedbackKind: "missed",
+      note: "重要な未回答質問が抜けている",
+    });
   });
 
   it("uses the last completed week when reprocessing all LLM tasks", async () => {
