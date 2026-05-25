@@ -149,61 +149,104 @@ jobの可視化、E2Eに近い確認に移っている。
 - 手動ナレッジはFAQ候補の編集UIとは別タブ、別API、別DBテーブルの公式情報ソースとして扱う。
 - Embeddings APIの失敗は保存失敗にせず、`embedding_error` として運用者が確認できるようにした。
 
-### 通知集約
+### 通知集約（完了）
+
+2026-05-25 に実装済み。
 
 - 複数人から出ている不具合報告を集約する。
 - 急増している不満を集約する。
 - 昨日以前の未回答質問を検出する。
-- 現状は単一投稿ベースの通知生成が中心。
+- 既存の `admin_notifications` を使い、DB schema や queue 名を追加せずに集約通知を作る。
+- 集約通知は pending/failed の既存集約通知を更新し、sent/dismissed 済み通知は巻き戻さない。
 
-### LLM出力品質調整
+### LLM出力品質調整（完了）
+
+2026-05-25 に実装済み。
 
 - FAQ候補の粒度を調整する。
 - 週報短い版が5分で確認できる長さになっているか確認し、必要ならプロンプトを調整する。
 - 自動返信本文の安全さと自然さをレビューする。
+- FAQ候補は近い論点を1候補へまとめ、根拠の薄い推測や一時的な雑談を候補化しないようにした。
+- 週報短い版は最大5項目、各項目1〜2文へ制限するプロンプトにした。
+- 自動返信は1〜3文、断定・約束・未確認手順追加を避ける安全制約を追加した。
 
-### Queue payload validation
+### Queue payload validation（完了）
+
+2026-05-25 に実装済み。
 
 - 仕様では shared schema validation 前提だが、現状は TypeScript 型中心。
 - runtime validation を追加し、不正payloadを明示的に失敗扱いにする。
+- `validateQueuePayload` を追加し、queue publish 時と worker 実行時に payload を検証する。
+- `report.weekly` の日付、ID配列、必須フィールドなどを runtime で検証する。
 
-### BullMQ failed job の可視化
+### BullMQ failed job の可視化（完了）
+
+2026-05-25 に実装済み。
 
 - LLM失敗runはDashboard/APIで確認できる。
 - BullMQ job自体の失敗一覧と再実行導線は未整備。
 - worker失敗を運用者が把握できる表示またはAPIを追加する。
+- `GET /api/queues/failed` と `POST /api/queues/:queueName/jobs/:id/retry` を追加した。
+- Dashboard に Queue失敗カードを追加し、failed job の理由、試行回数、再実行導線を表示する。
 
 ## P2: テスト拡充
 
-### Postgres repository tests
+### Postgres repository tests（完了）
+
+2026-05-25 に実装済み。
 
 - message upsert の冪等性を検証する。
 - deleted message が分類、FAQ、週報対象から外れることを検証する。
 - settings / policy 更新がDBへ保存されることを検証する。
 - LLM run retry がDB状態から再実行できることを検証する。
+- `TEST_DATABASE_URL` 指定時に実Postgresで走る repository integration test を追加した。
 
-### Queue integration tests
+### Queue integration tests（完了）
+
+2026-05-25 に実装済み。
 
 - sample import から `message.classify` が作られることを検証する。
 - classify job から notification と `auto_reply.decide` が作られることを検証する。
 - faq / report queue で候補と週報が生成されることを検証する。
 - failed job 時に対象レコードが失敗状態になることを検証する。
+- persistent workflow の queue handler 単位で、ingest、classify、FAQ、週報、失敗run記録を検証する。
 
-### Discord dry-run tests
+### Discord dry-run tests（完了）
+
+2026-05-25 に実装済み。
 
 - pending notification が dry-run sent になることを検証する。
 - auto reply send が `dry-run:<id>` を保存することを検証する。
 - `disabled` では送信queueが作られないことを検証する。
 - high / critical / official-needed は送信されないことを検証する。
+- Discord sender と自動返信安全境界の dry-run 単体テストを追加した。
 
-### Dashboard / API tests
+### Dashboard / API tests（完了）
+
+2026-05-25 に実装済み。
 
 - settings / policy update は検証済み。
 - notification dismiss、FAQ候補編集、FAQ status update、FAQ feedbackのstatus維持は検証済み。
 - auto reply approve / reject を検証する。
 - feedback 保存を検証する。
 - message filter query を検証する。
-- Dashboard のブラウザ操作テストは未整備。E2E基盤を入れる場合は別タスクとして扱う。
+- BullMQ failed job API、auto reply approve/reject、feedback保存、message filter query を検証する。
+- Dashboard のブラウザ操作テストは、E2E基盤を追加しない方針のため Phase 1 完了条件からは外す。
+
+## 2026-05-25 品質確認
+
+- `pnpm check` 実行済み。
+- `TEST_DATABASE_URL=postgres://curacuri:curacuri@localhost:5432/curacuri pnpm test -- tests/phase1/postgres-repository.test.ts`
+  実行済み。
+- `docs/discord-mcp-verification.md` に従い、SaseQ/discord-mcp を検証者役botとして実接続確認済み。
+- 対象チャンネル投稿が `discord.ingest` 経由でDBへ入ることを確認済み。
+- 除外チャンネル投稿がDBへ入らないことを確認済み。
+- curacuri.ai bot へのDMは Discord API が `50007` で送信拒否したため、DBへ入らないことのみ確認済み。
+- `DISCORD_DRY_RUN=false` で管理者通知が実Discordの管理者通知チャンネルへ投稿されることを確認済み。
+- `intake_only`、`faq_assist`、`approval_required` の実投稿を確認済み。
+- 高重要度、公式回答待ち、誤情報可能性の投稿が自動送信されず、運営確認に回ることを確認済み。
+- 関係のない雑談が自動返信と管理者通知を増やさないことを確認済み。
+- BullMQ failed job API が 0 件を返すことを確認済み。
 
 ## Phase 1 スコープ外として残すもの
 
