@@ -11,7 +11,12 @@ import {
   generateFaqCandidatesWithLlm,
   generateWeeklyReportWithLlm,
 } from "./llm/generation.js";
-import { createAdminNotification, createAutoReplyEscalationNotification } from "./notifications.js";
+import {
+  createAdminNotification,
+  createAggregateAdminNotifications,
+  createAutoReplyEscalationNotification,
+  upsertAggregateAdminNotifications,
+} from "./notifications.js";
 import { buildWeeklyReportMetrics } from "./report.js";
 import { listByCreatedAt, listByIngestedAt, type Phase1State } from "./store.js";
 import { newId, nowIso } from "./ids.js";
@@ -107,6 +112,14 @@ export async function processMessage(
   if (notification !== null) {
     state.notifications.set(notification.id, notification);
   }
+  upsertAggregateAdminNotifications(
+    state.notifications,
+    createAggregateAdminNotifications(
+      state.messages.values(),
+      state.classifications.values(),
+      state.settings,
+    ),
+  );
 
   if (!shouldCreateAutoReplyDecision(classification, state.autoReplyPolicy)) {
     return;

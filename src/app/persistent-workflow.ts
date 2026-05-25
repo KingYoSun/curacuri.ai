@@ -13,7 +13,12 @@ import {
   generateFaqCandidatesWithLlm,
   generateWeeklyReportWithLlm,
 } from "./llm/generation.js";
-import { createAdminNotification, createAutoReplyEscalationNotification } from "./notifications.js";
+import {
+  createAdminNotification,
+  createAggregateAdminNotifications,
+  createAutoReplyEscalationNotification,
+  upsertAggregateAdminNotifications,
+} from "./notifications.js";
 import { buildWeeklyReportMetrics } from "./report.js";
 import { sampleLogPath } from "./workflow.js";
 import { getLastCompletedWeekPeriod } from "../shared/report-period.js";
@@ -256,6 +261,17 @@ export async function handleMessageClassify(
         messageId: message.id,
         classificationId: classification.id,
       } satisfies AutoReplyDecidePayload);
+    }
+    const aggregateNotifications = createAggregateAdminNotifications(
+      state.messages.values(),
+      state.classifications.values(),
+      state.settings,
+    );
+    upsertAggregateAdminNotifications(state.notifications, aggregateNotifications);
+    for (const aggregate of aggregateNotifications) {
+      followUpJobs.push({
+        messageIds: aggregate.messageIds,
+      } satisfies OpsNotifyPayload);
     }
   }
   await context.repository.saveState(state);
