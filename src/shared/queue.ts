@@ -61,6 +61,18 @@ export type QueuePayload =
   | FaqGeneratePayload
   | ReportWeeklyPayload;
 
+export type FailedQueueJob = {
+  readonly queueName: QueueName;
+  readonly id: string;
+  readonly name: string;
+  readonly failedReason: string | null;
+  readonly attemptsMade: number;
+  readonly timestamp: number;
+  readonly processedOn: number | null;
+  readonly finishedOn: number | null;
+  readonly data: unknown;
+};
+
 export function assertKnownQueueName(name: string): asserts name is QueueName {
   if (!queueNames.includes(name as QueueName)) {
     throw new Error(`unknown queue name: ${name}`);

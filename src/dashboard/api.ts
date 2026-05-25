@@ -17,6 +17,7 @@ import type {
   Message,
   WeeklyReport,
 } from "../shared/types.js";
+import type { FailedQueueJob } from "../shared/queue.js";
 
 export async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(path);
@@ -74,6 +75,7 @@ export async function loadDashboardData(filters: MessageFilters): Promise<Dashbo
     weeklyReports,
     llmStatus,
     failedRuns,
+    failedQueueJobs,
   ] = await Promise.all([
     getJson<Settings>("/api/settings"),
     getJson<Policy>("/api/auto-reply/policy"),
@@ -86,6 +88,7 @@ export async function loadDashboardData(filters: MessageFilters): Promise<Dashbo
     getJson<readonly WeeklyReport[]>("/api/reports/weekly"),
     getJson<LlmStatus>("/api/llm/status"),
     getJson<readonly LlmRun[]>("/api/llm/runs?status=failed"),
+    getJson<readonly FailedQueueJob[]>("/api/queues/failed"),
   ]);
   return {
     settings,
@@ -99,6 +102,7 @@ export async function loadDashboardData(filters: MessageFilters): Promise<Dashbo
     weeklyReports,
     llmStatus,
     failedRuns,
+    failedQueueJobs,
   };
 }
 

@@ -88,6 +88,7 @@ type ActionKey =
   | "manual-knowledge-reindex"
   | "manual-knowledge-save"
   | "notification-dismiss"
+  | "queue-retry"
   | "report-generate"
   | "sample-import"
   | "settings-save"
@@ -277,6 +278,10 @@ function itemLimit<T>(items: readonly T[], limit: number): readonly T[] {
   return items.slice(0, limit);
 }
 
+function formatEpochMs(value: number): string {
+  return new Date(value).toISOString();
+}
+
 export function App() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [messageFilters, setMessageFilters] = useState<MessageFilters>(emptyFilters);
@@ -307,6 +312,7 @@ export function App() {
     manualKnowledge: INITIAL_LIMIT,
     autoReplies: INITIAL_LIMIT,
     failedRuns: INITIAL_LIMIT,
+    failedQueueJobs: INITIAL_LIMIT,
     weeklyReports: 4,
   });
 
@@ -401,6 +407,7 @@ export function App() {
       autoReplies: data?.autoReplies.length ?? 0,
       weeklyReports: data?.weeklyReports.length ?? 0,
       failedRuns: data?.llmStatus.failedCount ?? 0,
+      failedQueueJobs: data?.failedQueueJobs.length ?? 0,
     }),
     [data],
   );
@@ -484,6 +491,11 @@ export function App() {
           label="LLM失敗"
           tone={metrics.failedRuns > 0 ? "danger" : "default"}
           value={metrics.failedRuns}
+        />
+        <MetricCard
+          label="Queue失敗"
+          tone={metrics.failedQueueJobs > 0 ? "danger" : "default"}
+          value={metrics.failedQueueJobs}
         />
       </section>
 
@@ -575,6 +587,22 @@ export function App() {
                 setLimits((current) => ({
                   ...current,
                   failedRuns: current.failedRuns + INITIAL_LIMIT,
+                }));
+              }}
+            />
+            <QueueFailuresPanel
+              data={data}
+              limit={limits.failedQueueJobs}
+              pending={pendingAction === "queue-retry"}
+              onRetry={(queueName, id) =>
+                void runAction("queue-retry", "Queue jobの再実行を受け付けました", async () => {
+                  await sendJson("POST", `/api/queues/${queueName}/jobs/${id}/retry`, {});
+                })
+              }
+              onShowMore={() => {
+                setLimits((current) => ({
+                  ...current,
+                  failedQueueJobs: current.failedQueueJobs + INITIAL_LIMIT,
                 }));
               }}
             />
@@ -1203,6 +1231,62 @@ function LlmPanel(props: {
         <ShowMore
           shown={shown.length}
           total={props.data.failedRuns.length}
+          onShowMore={props.onShowMore}
+        />
+      </div>
+    </SectionCard>
+  );
+}
+
+function QueueFailuresPanel(props: {
+  readonly data: DashboardData;
+  readonly limit: number;
+  readonly pending: boolean;
+  readonly onRetry: (queueName: string, id: string) => void;
+  readonly onShowMore: () => void;
+}) {
+  const shown = itemLimit(props.data.failedQueueJobs, props.limit);
+  return (
+    <SectionCard description="BullMQ job自体の失敗一覧と再実行導線です。" title="Queue失敗">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-sm font-medium">failed jobs</h3>
+        <CountBadge shown={shown.length} total={props.data.failedQueueJobs.length} />
+      </div>
+      <div className="grid gap-2">
+        {props.data.failedQueueJobs.length === 0 ? (
+          <EmptyList description="失敗中のQueue jobはありません。" title="Queue失敗はありません" />
+        ) : (
+          shown.map((job) => (
+            <div
+              className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"
+              key={`${job.queueName}:${job.id}`}
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary">{job.queueName}</Badge>
+                  <span className="break-all text-sm font-medium">{job.id}</span>
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  試行 {job.attemptsMade} / 終了 {formatEpochMs(job.finishedOn ?? job.timestamp)}
+                </div>
+                <p className="mt-1 break-words text-sm">{job.failedReason ?? "詳細なし"}</p>
+              </div>
+              <ConfirmAction
+                description="このfailed jobをBullMQの待機状態へ戻します。"
+                disabled={props.pending}
+                label="再実行"
+                pending={props.pending}
+                title="Queue jobを再実行しますか？"
+                onConfirm={() => {
+                  props.onRetry(job.queueName, job.id);
+                }}
+              />
+            </div>
+          ))
+        )}
+        <ShowMore
+          shown={shown.length}
+          total={props.data.failedQueueJobs.length}
           onShowMore={props.onShowMore}
         />
       </div>

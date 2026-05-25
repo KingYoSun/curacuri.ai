@@ -9,7 +9,7 @@ import {
   allowedFaqStatusTransitions,
   canModerateAutoReply,
 } from "../../src/dashboard/action-rules.js";
-import type { QueueName, QueuePayload } from "../../src/shared/queue.js";
+import type { FailedQueueJob, QueueName, QueuePayload } from "../../src/shared/queue.js";
 import type {
   AdminNotification,
   AutoReply,
@@ -33,6 +33,22 @@ function createDashboardRuntime(seed: {
 } {
   const state = createPhase1State();
   const enqueuedJobs: { readonly queueName: QueueName; readonly payload: QueuePayload }[] = [];
+  const failedQueueJobs = new Map<string, FailedQueueJob>([
+    [
+      "message.classify:failed-1",
+      {
+        queueName: "message.classify",
+        id: "failed-1",
+        name: "message.classify",
+        failedReason: "payload invalid",
+        attemptsMade: 1,
+        timestamp: Date.parse("2026-05-21T00:00:00.000Z"),
+        processedOn: Date.parse("2026-05-21T00:00:01.000Z"),
+        finishedOn: Date.parse("2026-05-21T00:00:02.000Z"),
+        data: { messageId: "" },
+      },
+    ],
+  ]);
   if (seed.notification !== undefined) {
     state.notifications.set(seed.notification.id, seed.notification);
   }
@@ -224,6 +240,12 @@ function createDashboardRuntime(seed: {
       add(queueName, payload) {
         enqueuedJobs.push({ queueName, payload });
         return Promise.resolve({ id: undefined });
+      },
+      listFailedJobs() {
+        return Promise.resolve([...failedQueueJobs.values()]);
+      },
+      retryFailedJob(queueName, jobId) {
+        return Promise.resolve(failedQueueJobs.delete(`${queueName}:${jobId}`));
       },
       close() {
         return Promise.resolve();
@@ -682,6 +704,29 @@ describe("dashboard action API", () => {
     });
     expect(response.status).toBe(404);
   });
+
+  it("lists and retries failed BullMQ jobs", async () => {
+    const runtime = createDashboardRuntime({});
+    const app = createApiApp(runtime);
+
+    const listResponse = await app.request("/api/queues/failed");
+    expect(listResponse.ok).toBe(true);
+    expect(await listResponse.json()).toMatchObject([
+      {
+        queueName: "message.classify",
+        id: "failed-1",
+        failedReason: "payload invalid",
+      },
+    ]);
+
+    const retryResponse = await app.request("/api/queues/message.classify/jobs/failed-1/retry", {
+      method: "POST",
+    });
+    expect(retryResponse.status).toBe(202);
+
+    const emptyListResponse = await app.request("/api/queues/failed");
+    expect(await emptyListResponse.json()).toEqual([]);
+  });
 });
 
 describe("dashboard action rules", () => {
@@ -742,6 +787,7 @@ describe("dashboard API client", () => {
         failedCount: 0,
       },
       "/api/llm/runs?status=failed": [],
+      "/api/queues/failed": [],
     };
     vi.stubGlobal(
       "fetch",
@@ -763,5 +809,6 @@ describe("dashboard API client", () => {
     });
 
     expect(data.manualKnowledge).toMatchObject([{ id: "knowledge-1", title: "Webhook設定" }]);
+    expect(data.failedQueueJobs).toEqual([]);
   });
 });

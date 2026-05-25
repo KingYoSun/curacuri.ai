@@ -20,6 +20,7 @@ import {
 import type { AppRuntime } from "../app/runtime.js";
 import { syncSettingsWithAutoReplyPolicy } from "../app/settings.js";
 import { getLastCompletedWeekPeriod } from "../shared/report-period.js";
+import { assertKnownQueueName } from "../shared/queue.js";
 import {
   autoReplyCategories,
   autoReplyModes,
@@ -308,6 +309,27 @@ export function createApiApp(runtime: AppRuntime) {
     const body = await requestBody(context.req.raw);
     await enqueueReprocess(runtime.repository, runtime.queues, reprocessScopeValue(body.scope));
     return context.json({ ok: true, accepted: true }, 202);
+  });
+
+  app.get("/api/queues/failed", async (context) =>
+    context.json(await runtime.queues.listFailedJobs()),
+  );
+
+  app.post("/api/queues/:queueName/jobs/:id/retry", async (context) => {
+    const queueName = context.req.param("queueName");
+    try {
+      assertKnownQueueName(queueName);
+      const retried = await runtime.queues.retryFailedJob(queueName, context.req.param("id"));
+      if (!retried) {
+        return context.json({ error: "failed job not found" }, 404);
+      }
+      return context.json({ ok: true, accepted: true }, 202);
+    } catch (error) {
+      return context.json(
+        { error: error instanceof Error ? error.message : "failed job retry failed" },
+        400,
+      );
+    }
   });
 
   app.get("/api/settings", async (context) => context.json(await getSettingsForResponse(runtime)));

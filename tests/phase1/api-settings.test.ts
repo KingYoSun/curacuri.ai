@@ -161,6 +161,12 @@ function createSettingsRuntime(): AppRuntime {
       add() {
         return Promise.resolve({ id: undefined });
       },
+      listFailedJobs() {
+        return Promise.resolve([]);
+      },
+      retryFailedJob() {
+        return Promise.resolve(false);
+      },
       close() {
         return Promise.resolve();
       },

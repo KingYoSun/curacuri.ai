@@ -15,6 +15,7 @@ import type {
   Message,
   WeeklyReport,
 } from "../shared/types.js";
+import type { FailedQueueJob } from "../shared/queue.js";
 
 export type Settings = Pick<
   GuildSettings,
@@ -78,6 +79,7 @@ export type DashboardData = {
   readonly weeklyReports: readonly WeeklyReport[];
   readonly llmStatus: LlmStatus;
   readonly failedRuns: readonly LlmRun[];
+  readonly failedQueueJobs: readonly FailedQueueJob[];
 };
 
 export type SettingsDraft = {
