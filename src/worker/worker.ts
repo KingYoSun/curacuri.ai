@@ -1,6 +1,6 @@
 import "../app/env.js";
 
-import { Worker, type Job } from "bullmq";
+import { Worker } from "bullmq";
 
 import { createAppRuntime } from "../app/runtime.js";
 import {
@@ -13,6 +13,7 @@ import {
 import { nowIso } from "../app/ids.js";
 import { createDiscordSender } from "../bot/discord-sender.js";
 import { queueNames, type QueueName, type QueuePayload } from "../shared/queue.js";
+import { validateQueuePayload } from "../shared/queue-validation.js";
 import { sendPendingNotifications } from "./notifications.js";
 import type {
   AutoReplyDecidePayload,
@@ -59,28 +60,28 @@ async function sendAutoReply(autoReplyId: string): Promise<void> {
   }
 }
 
-async function handleJob(queueName: QueueName, job: Job<QueuePayload>): Promise<void> {
+async function handleJob(queueName: QueueName, payload: QueuePayload): Promise<void> {
   switch (queueName) {
     case "discord.ingest":
-      await handleDiscordIngest(runtime, job.data as DiscordIngestPayload);
+      await handleDiscordIngest(runtime, payload as DiscordIngestPayload);
       return;
     case "message.classify":
-      await handleMessageClassify(runtime, job.data as MessageClassifyPayload);
+      await handleMessageClassify(runtime, payload as MessageClassifyPayload);
       return;
     case "ops.notify":
       await sendPendingNotifications(runtime.repository, sender);
       return;
     case "auto_reply.decide":
-      await handleAutoReplyDecide(runtime, job.data as AutoReplyDecidePayload);
+      await handleAutoReplyDecide(runtime, payload as AutoReplyDecidePayload);
       return;
     case "auto_reply.send":
-      await sendAutoReply((job.data as AutoReplySendPayload).autoReplyId);
+      await sendAutoReply((payload as AutoReplySendPayload).autoReplyId);
       return;
     case "faq.generate":
-      await handleFaqGenerate(runtime, job.data as FaqGeneratePayload);
+      await handleFaqGenerate(runtime, payload as FaqGeneratePayload);
       return;
     case "report.weekly":
-      await handleReportWeekly(runtime, job.data as ReportWeeklyPayload);
+      await handleReportWeekly(runtime, payload as ReportWeeklyPayload);
       return;
   }
 }
@@ -89,7 +90,7 @@ for (const queueName of queueNames) {
   new Worker<QueuePayload>(
     queueName,
     async (job) => {
-      await handleJob(queueName, job);
+      await handleJob(queueName, validateQueuePayload(queueName, job.data));
     },
     { connection: runtime.queues.connection },
   );

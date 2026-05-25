@@ -2,6 +2,7 @@ import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 
 import { queueNames, type QueueName, type QueuePayload } from "../shared/queue.js";
+import { validateQueuePayload } from "../shared/queue-validation.js";
 import type { QueuePublisher } from "./persistent-workflow.js";
 
 export type QueueRuntime = QueuePublisher & {
@@ -22,7 +23,7 @@ export function createQueueRuntime(redisUrl: string): QueueRuntime {
       if (queue === undefined) {
         throw new Error(`unknown queue name: ${queueName}`);
       }
-      const job = await queue.add(queueName, payload);
+      const job = await queue.add(queueName, validateQueuePayload(queueName, payload));
       return { id: job.id };
     },
     async close() {
