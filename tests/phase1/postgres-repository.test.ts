@@ -5,7 +5,6 @@ import { handleMessageClassify, handleReportWeekly } from "../../src/app/persist
 import type { QueuePublisher } from "../../src/app/persistent-workflow.js";
 import { normalizeSampleRecord } from "../../src/app/intake.js";
 import { PostgresPhase1Repository } from "../../src/app/repositories/postgres.js";
-import { createPhase1State } from "../../src/app/store.js";
 import type { Classification, Message } from "../../src/shared/types.js";
 import type { QueueName, QueuePayload } from "../../src/shared/queue.js";
 import { FakeLlmClient } from "./fake-llm.js";
@@ -140,7 +139,7 @@ describe.skipIf(databaseUrl === undefined)("PostgresPhase1Repository", () => {
       ),
       deletedAt: "2026-05-21T00:00:00.000Z",
     };
-    const state = createPhase1State();
+    const state = await repository.loadState();
     state.messages.set(activeMessage.id, activeMessage);
     state.messages.set(deletedMessage.id, deletedMessage);
     state.classifications.set("active-classification", classificationFor(activeMessage));
